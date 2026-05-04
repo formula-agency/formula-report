@@ -19,6 +19,7 @@
 - `GOOGLE_SHEET_ID` - ID таблицы из URL
 - `GOOGLE_SHEET_NAME` - имя листа
 - `GOOGLE_ALLOWED_RANGE` - диапазон, который можно обновлять, например `A2:J200`
+- `GOOGLE_SOURCE_SUMMARY_SHEET_NAME` - имя отдельного листа для итогов по источникам, по умолчанию `Итог по источникам`
 - `GOOGLE_SERVICE_ACCOUNT_FILE` - локальный путь до JSON-ключа, например `Credentials/otchety-493307-a6f2a3a4c466.json`
 - `GOOGLE_SERVICE_ACCOUNT_JSON` - JSON-ключ service account для GitHub Secrets
 
@@ -44,6 +45,7 @@
 - `GOOGLE_SHEET_ID`
 - `GOOGLE_SHEET_NAME`
 - `GOOGLE_ALLOWED_RANGE`
+- `GOOGLE_SOURCE_SUMMARY_SHEET_NAME`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `REPORT_TIMEZONE`
 - `REPORT_PERIOD_MODE`

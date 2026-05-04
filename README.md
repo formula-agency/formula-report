@@ -7,10 +7,12 @@
 - берет данные из `crm.lead.list` или `crm.deal.list`
 - учитывает записи любых стадий
 - считает только записи с заполненными UTM-полями
+- умеет брать UTM из `UTM_*` и автоматически падать обратно на `UF_LEAD_FIRST_UTM_*`, если именно там лежат реальные данные
 - определяет `Источник` по `utm_source`
 - строит историю начиная с `2026-03-01`
 - делает вложенную структуру: итог месяца -> итог дня -> детальные строки
 - создает row groups в Google Sheets, чтобы месяцы и дни можно было сворачивать
+- создает отдельный лист `Итог по источникам`
 - обновляет только значения в диапазоне `GOOGLE_ALLOWED_RANGE`
 - запускается локально или по расписанию через GitHub Actions
 
@@ -41,6 +43,7 @@ BITRIX_REQUEST_TIMEOUT=120
 GOOGLE_SHEET_ID=1HJkKDM0k7ZtytAURms7CYX5bjOyLgTsfQW0UU34vceg
 GOOGLE_SHEET_NAME=Показатели
 GOOGLE_ALLOWED_RANGE=A1:Z60601
+GOOGLE_SOURCE_SUMMARY_SHEET_NAME=Итог по источникам
 GOOGLE_SERVICE_ACCOUNT_FILE=Credentials/otchety-493307-a6f2a3a4c466.json
 
 REPORT_TIMEZONE=Asia/Yekaterinburg
@@ -84,13 +87,15 @@ python scripts/sync_formula_report.py --env-file bitrix.env
   - строка `Итого за <месяц>`
   - внутри нее строки `Итого за <день>`
   - под каждым днем детальные строки по UTM-комбинациям
+- если `UTM_SOURCE / UTM_MEDIUM / UTM_CAMPAIGN` пусты, скрипт для лидов использует `UF_LEAD_FIRST_UTM_SOURCE / MEDIUM / CAMPAIGN`
 - `Источник` вычисляется так:
   - `leadit` -> `Лидген КЦ`
   - `selfwalk` -> `Самоход`
   - `avito` -> `Авито`
   - `recommendation` -> `Рекомендация`
-- если `utm_source` не попал в словарь, пишется значение из `REPORT_UNKNOWN_SOURCE`
+- если `utm_source` не попал в словарь, в `Источник` пишется само значение `utm_source`
 - для месяцев и дней создаются группировки строк Google Sheets, как на скриншоте
+- на отдельном листе `Итог по источникам` формируется summary без группировок
 
 ## GitHub Actions
 
@@ -117,6 +122,7 @@ Workflow лежит в `.github/workflows/update-report.yml`.
 - `GOOGLE_SHEET_ID`
 - `GOOGLE_SHEET_NAME`
 - `GOOGLE_ALLOWED_RANGE`
+- `GOOGLE_SOURCE_SUMMARY_SHEET_NAME`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `REPORT_TIMEZONE`
 - `REPORT_PERIOD_MODE`

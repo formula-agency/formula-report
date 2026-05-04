@@ -27,6 +27,11 @@ SOURCE_MAP = {
     "avito": "Авито",
     "recommendation": "Рекомендация",
 }
+LEAD_FALLBACK_UTM_FIELDS = {
+    "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
+    "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
+    "campaign": ["UF_LEAD_FIRST_UTM_CAMPAIGN"],
+}
 MONTH_LABELS_RU = {
     1: "Январь",
     2: "Февраль",
@@ -120,6 +125,7 @@ class Settings:
     google_sheet_id: str
     google_sheet_name: str
     google_allowed_range: str
+    google_source_summary_sheet_name: str
     google_service_account_file: str | None
     google_service_account_json: str | None
     report_timezone: str
@@ -138,6 +144,12 @@ class ReportBuildResult:
     day_count: int
     detail_count: int
     record_count: int
+
+
+@dataclass
+class SheetWriteTarget:
+    sheet_id: int
+    sheet_title: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -228,6 +240,10 @@ def load_settings() -> Settings:
         google_sheet_id=require_env("GOOGLE_SHEET_ID"),
         google_sheet_name=require_env("GOOGLE_SHEET_NAME"),
         google_allowed_range=require_env("GOOGLE_ALLOWED_RANGE"),
+        google_source_summary_sheet_name=(
+            os.getenv("GOOGLE_SOURCE_SUMMARY_SHEET_NAME", "Итог по источникам").strip()
+            or "Итог по источникам"
+        ),
         google_service_account_file=google_service_account_file,
         google_service_account_json=google_service_account_json,
         report_timezone=os.getenv("REPORT_TIMEZONE", "Asia/Yekaterinburg").strip() or "Asia/Yekaterinburg",
@@ -246,8 +262,16 @@ def normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def raw_cell_text(value: Any) -> str:
+    return str(value or "").strip().lower().replace("ё", "е")
+
+
 def normalize_key(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def cell_matches_alias(value: Any, aliases: set[str]) -> bool:
+    return normalize_text(value) in aliases or raw_cell_text(value) in aliases
 
 
 def a1_to_col_index(column_label: str) -> int:
@@ -357,6 +381,49 @@ def resolve_sheet_context(service: Any, settings: Settings) -> SheetContext:
     )
 
 
+def ensure_sheet_exists(
+    service: Any,
+    spreadsheet_id: str,
+    sheet_title: str,
+    row_count: int = 2000,
+    column_count: int = 10,
+) -> SheetWriteTarget:
+    metadata = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title))")
+        .execute()
+    )
+    for sheet in metadata.get("sheets", []):
+        properties = sheet["properties"]
+        if properties["title"] == sheet_title:
+            return SheetWriteTarget(sheet_id=properties["sheetId"], sheet_title=properties["title"])
+
+    response = (
+        service.spreadsheets()
+        .batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": sheet_title,
+                                "gridProperties": {
+                                    "rowCount": row_count,
+                                    "columnCount": column_count,
+                                },
+                            }
+                        }
+                    }
+                ]
+            },
+        )
+        .execute()
+    )
+    properties = response["replies"][0]["addSheet"]["properties"]
+    return SheetWriteTarget(sheet_id=properties["sheetId"], sheet_title=properties["title"])
+
+
 def normalize_webhook_base(url: str) -> str:
     parsed = urlparse(url.strip())
     path = parsed.path or "/"
@@ -405,6 +472,38 @@ def bitrix_method_name(entity_type: str) -> str:
     if entity_type == "deal":
         return "crm.deal.list"
     raise ConfigError("BITRIX_ENTITY_TYPE must be lead or deal.")
+
+
+def get_utm_field_candidates(settings: Settings) -> dict[str, list[str]]:
+    candidates = {
+        "source": [settings.bitrix_utm_source_field],
+        "medium": [settings.bitrix_utm_medium_field],
+        "campaign": [settings.bitrix_utm_campaign_field],
+    }
+
+    if settings.bitrix_entity_type == "lead":
+        for key, fallback_fields in LEAD_FALLBACK_UTM_FIELDS.items():
+            for field_name in fallback_fields:
+                if field_name not in candidates[key]:
+                    candidates[key].append(field_name)
+
+    return candidates
+
+
+def resolve_record_value(record: dict[str, Any], field_names: list[str]) -> str:
+    for field_name in field_names:
+        value = normalize_key(record.get(field_name))
+        if value:
+            return value
+    return ""
+
+
+def resolve_record_utm_key(record: dict[str, Any], field_candidates: dict[str, list[str]]) -> UtmKey:
+    return UtmKey(
+        utm_source=resolve_record_value(record, field_candidates["source"]),
+        utm_medium=resolve_record_value(record, field_candidates["medium"]),
+        utm_campaign=resolve_record_value(record, field_candidates["campaign"]),
+    )
 
 
 def build_bitrix_session() -> requests.Session:
@@ -473,15 +572,9 @@ def fetch_day_records(
     settings: Settings,
     day_start: datetime,
     day_end: datetime,
+    select_fields: list[str],
 ) -> list[dict[str, Any]]:
     filters = build_day_filters(settings, day_start, day_end)
-    select_fields = [
-        "ID",
-        settings.bitrix_date_field,
-        settings.bitrix_utm_source_field,
-        settings.bitrix_utm_medium_field,
-        settings.bitrix_utm_campaign_field,
-    ]
     records: list[dict[str, Any]] = []
     next_page: int | None = 0
 
@@ -500,21 +593,17 @@ def fetch_day_records(
     return records
 
 
-def record_has_all_utm(record: dict[str, Any], settings: Settings) -> bool:
-    return all(
-        normalize_key(record.get(field))
-        for field in (
-            settings.bitrix_utm_source_field,
-            settings.bitrix_utm_medium_field,
-            settings.bitrix_utm_campaign_field,
-        )
-    )
-
-
 def build_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[date, Counter[UtmKey]], int]:
     session = build_bitrix_session()
     day_counters: dict[date, Counter[UtmKey]] = {}
     counted_records = 0
+    field_candidates = get_utm_field_candidates(settings)
+    select_fields = ["ID", settings.bitrix_date_field]
+    for field_name in (
+        field_candidates["source"] + field_candidates["medium"] + field_candidates["campaign"]
+    ):
+        if field_name not in select_fields:
+            select_fields.append(field_name)
 
     for current_date in iterate_dates(window.start.date(), window.end.date()):
         day_start = datetime.combine(current_date, time.min, tzinfo=window.start.tzinfo)
@@ -522,20 +611,14 @@ def build_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[d
         if current_date == window.end.date():
             day_end = window.end
 
-        records = fetch_day_records(session, settings, day_start, day_end)
+        records = fetch_day_records(session, settings, day_start, day_end, select_fields)
         counter: Counter[UtmKey] = Counter()
 
         for record in records:
-            if settings.report_require_all_utm and not record_has_all_utm(record, settings):
-                continue
-
-            key = UtmKey(
-                utm_source=normalize_key(record.get(settings.bitrix_utm_source_field)),
-                utm_medium=normalize_key(record.get(settings.bitrix_utm_medium_field)),
-                utm_campaign=normalize_key(record.get(settings.bitrix_utm_campaign_field)),
-            )
+            key = resolve_record_utm_key(record, field_candidates)
             if not (key.utm_source and key.utm_medium and key.utm_campaign):
-                continue
+                if settings.report_require_all_utm:
+                    continue
 
             counter[key] += 1
             counted_records += 1
@@ -561,11 +644,10 @@ def fetch_header_rows(service: Any, context: SheetContext) -> list[list[Any]]:
 
 def find_header_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
     for row_index, row in enumerate(rows):
-        normalized_cells = [normalize_text(cell) for cell in row]
         column_map: dict[str, int] = {}
         for canonical_name, aliases in HEADER_ALIASES.items():
-            for column_index, cell in enumerate(normalized_cells):
-                if cell in aliases:
+            for column_index, cell in enumerate(row):
+                if cell_matches_alias(cell, aliases):
                     column_map[canonical_name] = column_index
                     break
 
@@ -581,7 +663,7 @@ def find_header_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
 def find_first_matching_column(rows: list[list[Any]], aliases: set[str]) -> int | None:
     for row in rows:
         for column_index, cell in enumerate(row):
-            if normalize_text(cell) in aliases:
+            if cell_matches_alias(cell, aliases):
                 return column_index
     return None
 
@@ -592,6 +674,17 @@ def month_summary_label(year: int, month: int) -> str:
 
 def day_summary_label(current_date: date) -> str:
     return f"Итого за {current_date.isoformat()}"
+
+
+def month_period_label(year: int, month: int) -> str:
+    return f"{MONTH_LABELS_RU[month]} {year}"
+
+
+def resolve_source_label(raw_source: str, unknown_source: str) -> str:
+    normalized_source = normalize_key(raw_source)
+    if not normalized_source:
+        return unknown_source
+    return SOURCE_MAP.get(normalized_source, normalized_source)
 
 
 def build_row(width: int) -> list[Any]:
@@ -665,7 +758,7 @@ def build_report_rows(
                 detail_row[column_map["utm_campaign"]] = key.utm_campaign
                 if date_column is not None:
                     detail_row[date_column] = current_date.isoformat()
-                detail_row[column_map["source"]] = SOURCE_MAP.get(key.utm_source, unknown_source)
+                detail_row[column_map["source"]] = resolve_source_label(key.utm_source, unknown_source)
                 detail_row[column_map["total"]] = day_counter[key]
                 output_rows.append(detail_row)
                 detail_number += 1
@@ -689,6 +782,39 @@ def build_report_rows(
     )
 
 
+def build_source_summary_rows(
+    daily_counts: dict[date, Counter[UtmKey]],
+    unknown_source: str,
+) -> list[list[Any]]:
+    monthly_source_totals: dict[tuple[int, int], Counter[str]] = defaultdict(Counter)
+    overall_source_totals: Counter[str] = Counter()
+
+    for current_date, counter in daily_counts.items():
+        month_key = (current_date.year, current_date.month)
+        for utm_key, amount in counter.items():
+            source_label = resolve_source_label(utm_key.utm_source, unknown_source)
+            monthly_source_totals[month_key][source_label] += amount
+            overall_source_totals[source_label] += amount
+
+    rows: list[list[Any]] = [["Период", "Источник", "Суммарный объем"]]
+    for month_key in sorted(monthly_source_totals):
+        year, month = month_key
+        period_label = month_period_label(year, month)
+        for source_label in sorted(monthly_source_totals[month_key]):
+            rows.append([period_label, source_label, monthly_source_totals[month_key][source_label]])
+
+    if rows == [["Период", "Источник", "Суммарный объем"]]:
+        rows.append(["Все время", unknown_source, 0])
+        return rows
+
+    rows.append([])
+    rows.append(["Все время", "", ""])
+    for source_label in sorted(overall_source_totals):
+        rows.append(["Все время", source_label, overall_source_totals[source_label]])
+
+    return rows
+
+
 def clear_report_values(service: Any, context: SheetContext, header_rows: int) -> None:
     clear_start_row = context.allowed_range.start_row + header_rows
     if clear_start_row > context.allowed_range.end_row:
@@ -701,6 +827,16 @@ def clear_report_values(service: Any, context: SheetContext, header_rows: int) -
     service.spreadsheets().values().clear(
         spreadsheetId=context.spreadsheet_id,
         range=clear_range,
+        body={},
+    ).execute()
+
+
+def clear_sheet_values(service: Any, spreadsheet_id: str, sheet_title: str) -> None:
+    escaped_title = sheet_title.replace("'", "''")
+    quoted_title = sheet_title if re.fullmatch(r"[A-Za-z0-9_]+", sheet_title) else f"'{escaped_title}'"
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id,
+        range=f"{quoted_title}!A:Z",
         body={},
     ).execute()
 
@@ -718,6 +854,26 @@ def write_report_rows(
     service.spreadsheets().values().update(
         spreadsheetId=context.spreadsheet_id,
         range=write_range,
+        valueInputOption="USER_ENTERED",
+        body={"majorDimension": "ROWS", "values": rows},
+    ).execute()
+
+
+def write_sheet_rows(
+    service: Any,
+    spreadsheet_id: str,
+    sheet_title: str,
+    rows: list[list[Any]],
+) -> None:
+    if not rows:
+        return
+    escaped_title = sheet_title.replace("'", "''")
+    quoted_title = sheet_title if re.fullmatch(r"[A-Za-z0-9_]+", sheet_title) else f"'{escaped_title}'"
+    end_row = len(rows)
+    end_col = chr(ord("A") + max(len(row) for row in rows) - 1)
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"{quoted_title}!A1:{end_col}{end_row}",
         valueInputOption="USER_ENTERED",
         body={"majorDimension": "ROWS", "values": rows},
     ).execute()
@@ -828,11 +984,31 @@ def main() -> int:
             column_map=column_map,
             unknown_source=settings.report_unknown_source,
         )
+        source_summary_rows = build_source_summary_rows(
+            daily_counts=day_counters,
+            unknown_source=settings.report_unknown_source,
+        )
 
         if not args.dry_run:
             clear_report_values(sheets_service, context, header_row_index + 1)
             write_report_rows(sheets_service, context, result.rows)
             apply_row_groups(sheets_service, context, result)
+            summary_target = ensure_sheet_exists(
+                sheets_service,
+                context.spreadsheet_id,
+                settings.google_source_summary_sheet_name,
+            )
+            clear_sheet_values(
+                sheets_service,
+                context.spreadsheet_id,
+                summary_target.sheet_title,
+            )
+            write_sheet_rows(
+                sheets_service,
+                context.spreadsheet_id,
+                summary_target.sheet_title,
+                source_summary_rows,
+            )
 
         print_summary(context, result, args.dry_run)
         return 0
