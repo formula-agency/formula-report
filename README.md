@@ -9,6 +9,11 @@
 - считает только записи с заполненными UTM-полями
 - умеет брать UTM из `UTM_*` и автоматически падать обратно на `UF_LEAD_FIRST_UTM_*`, если именно там лежат реальные данные
 - определяет `Источник` по `utm_source`
+- собирает дополнительные метрики по сделкам:
+  - `Одобрена ипотека`
+  - `Проведена встреча/показ`
+  - `Зафиксирована бронь`
+  - `Закрыто сделок`
 - строит историю начиная с `2026-03-01`
 - делает вложенную структуру: итог месяца -> итог дня -> детальные строки
 - создает row groups в Google Sheets, чтобы месяцы и дни можно было сворачивать
@@ -33,11 +38,16 @@ pip install -r requirements.txt
 
 ```env
 BITRIX_WEBHOOK_URL=https://your-company.bitrix24.ru/rest/1/your_webhook/
-BITRIX_ENTITY_TYPE=lead
+BITRIX_ENTITY_TYPE=deal
 BITRIX_DATE_FIELD=DATE_CREATE
 BITRIX_UTM_SOURCE_FIELD=UTM_SOURCE
 BITRIX_UTM_MEDIUM_FIELD=UTM_MEDIUM
 BITRIX_UTM_CAMPAIGN_FIELD=UTM_CAMPAIGN
+BITRIX_STAGE_FIELD=STAGE_ID
+BITRIX_APPROVED_MORTGAGE_FIELD=UF_CRM_APPROVED_MORTGAGE
+BITRIX_MEETING_SHOW_FIELD=UF_CRM_MEETING_SHOW
+BITRIX_RESERVATION_FIELD=UF_CRM_RESERVATION
+BITRIX_SUCCESS_STAGE_IDS=WON,CLOSED
 BITRIX_REQUEST_TIMEOUT=120
 
 GOOGLE_SHEET_ID=1HJkKDM0k7ZtytAURms7CYX5bjOyLgTsfQW0UU34vceg
@@ -93,6 +103,7 @@ python scripts/sync_formula_report.py --env-file bitrix.env
   - `selfwalk` -> `Самоход`
   - `avito` -> `Авито`
   - `recommendation` -> `Рекомендация`
+- дополнительные метрики берутся по полям сделки и успешным стадиям закрытия
 - если `utm_source` не попал в словарь, в `Источник` пишется само значение `utm_source`
 - для месяцев и дней создаются группировки строк Google Sheets, как на скриншоте
 - на отдельном листе `Итог по источникам` формируется summary без группировок
@@ -118,6 +129,11 @@ Workflow лежит в `.github/workflows/update-report.yml`.
 - `BITRIX_UTM_SOURCE_FIELD`
 - `BITRIX_UTM_MEDIUM_FIELD`
 - `BITRIX_UTM_CAMPAIGN_FIELD`
+- `BITRIX_STAGE_FIELD`
+- `BITRIX_APPROVED_MORTGAGE_FIELD`
+- `BITRIX_MEETING_SHOW_FIELD`
+- `BITRIX_RESERVATION_FIELD`
+- `BITRIX_SUCCESS_STAGE_IDS`
 - `BITRIX_REQUEST_TIMEOUT`
 - `GOOGLE_SHEET_ID`
 - `GOOGLE_SHEET_NAME`

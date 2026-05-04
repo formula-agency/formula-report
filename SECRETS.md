@@ -12,6 +12,11 @@
 - `BITRIX_UTM_SOURCE_FIELD` - код поля `utm_source`
 - `BITRIX_UTM_MEDIUM_FIELD` - код поля `utm_medium`
 - `BITRIX_UTM_CAMPAIGN_FIELD` - код поля `utm_campaign`
+- `BITRIX_STAGE_FIELD` - поле стадии сделки, обычно `STAGE_ID`
+- `BITRIX_APPROVED_MORTGAGE_FIELD` - код поля галочки "Одобрена ипотека"
+- `BITRIX_MEETING_SHOW_FIELD` - код поля встречи/показа
+- `BITRIX_RESERVATION_FIELD` - код поля брони
+- `BITRIX_SUCCESS_STAGE_IDS` - список успешных стадий закрытия сделки, через запятую
 - `BITRIX_REQUEST_TIMEOUT` - таймаут запроса к Bitrix в секундах, например `120`
 
 ### Google Sheets
@@ -41,6 +46,11 @@
 - `BITRIX_UTM_SOURCE_FIELD`
 - `BITRIX_UTM_MEDIUM_FIELD`
 - `BITRIX_UTM_CAMPAIGN_FIELD`
+- `BITRIX_STAGE_FIELD`
+- `BITRIX_APPROVED_MORTGAGE_FIELD`
+- `BITRIX_MEETING_SHOW_FIELD`
+- `BITRIX_RESERVATION_FIELD`
+- `BITRIX_SUCCESS_STAGE_IDS`
 - `BITRIX_REQUEST_TIMEOUT`
 - `GOOGLE_SHEET_ID`
 - `GOOGLE_SHEET_NAME`
