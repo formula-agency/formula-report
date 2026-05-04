@@ -32,6 +32,20 @@ LEAD_FALLBACK_UTM_FIELDS = {
     "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
     "campaign": ["UF_LEAD_FIRST_UTM_CAMPAIGN"],
 }
+DEAL_FALLBACK_UTM_FIELDS = {
+    "source": ["UF_DEAL_FIRST_UTM_SOURCE"],
+    "medium": ["UF_DEAL_FIRST_UTM_MEDIUM"],
+    "campaign": ["UF_DEAL_FIRST_UTM_CAMPAIGN"],
+}
+DEFAULT_DEAL_APPROVED_MORTGAGE_FIELD = "UF_DEAL_MORTGAGE_APPROVED"
+DEFAULT_DEAL_MEETING_SHOW_FIELD = "UF_DEAL_SHOW"
+DEFAULT_DEAL_RESERVATION_FIELD = "UF_DEAL_WHERE_PUT_RESERVATION"
+METRIC_COLUMN_TITLES = {
+    "approved_mortgage": "Одобрена ипотека",
+    "meeting_show": "Проведена встреча/показ",
+    "reservation": "Зафиксирована бронь",
+    "closed_deals": "Закрыто сделок",
+}
 MONTH_LABELS_RU = {
     1: "Январь",
     2: "Февраль",
@@ -319,9 +333,15 @@ def load_settings() -> Settings:
         bitrix_utm_medium_field=os.getenv("BITRIX_UTM_MEDIUM_FIELD", "UTM_MEDIUM").strip() or "UTM_MEDIUM",
         bitrix_utm_campaign_field=os.getenv("BITRIX_UTM_CAMPAIGN_FIELD", "UTM_CAMPAIGN").strip() or "UTM_CAMPAIGN",
         bitrix_stage_field=os.getenv("BITRIX_STAGE_FIELD", default_stage_field).strip() or default_stage_field,
-        bitrix_approved_mortgage_field=os.getenv("BITRIX_APPROVED_MORTGAGE_FIELD", "").strip() or None,
-        bitrix_meeting_show_field=os.getenv("BITRIX_MEETING_SHOW_FIELD", "").strip() or None,
-        bitrix_reservation_field=os.getenv("BITRIX_RESERVATION_FIELD", "").strip() or None,
+        bitrix_approved_mortgage_field=(
+            os.getenv("BITRIX_APPROVED_MORTGAGE_FIELD", "").strip() or DEFAULT_DEAL_APPROVED_MORTGAGE_FIELD
+        ),
+        bitrix_meeting_show_field=(
+            os.getenv("BITRIX_MEETING_SHOW_FIELD", "").strip() or DEFAULT_DEAL_MEETING_SHOW_FIELD
+        ),
+        bitrix_reservation_field=(
+            os.getenv("BITRIX_RESERVATION_FIELD", "").strip() or DEFAULT_DEAL_RESERVATION_FIELD
+        ),
         bitrix_success_stage_ids=bitrix_success_stage_ids,
         bitrix_request_timeout=read_int("BITRIX_REQUEST_TIMEOUT", 120),
         google_sheet_id=require_env("GOOGLE_SHEET_ID"),
@@ -577,6 +597,21 @@ def get_utm_field_candidates(settings: Settings) -> dict[str, list[str]]:
     return candidates
 
 
+def get_deal_utm_field_candidates(settings: Settings) -> dict[str, list[str]]:
+    candidates = {
+        "source": [settings.bitrix_utm_source_field],
+        "medium": [settings.bitrix_utm_medium_field],
+        "campaign": [settings.bitrix_utm_campaign_field],
+    }
+
+    for key, fallback_fields in DEAL_FALLBACK_UTM_FIELDS.items():
+        for field_name in fallback_fields:
+            if field_name not in candidates[key]:
+                candidates[key].append(field_name)
+
+    return candidates
+
+
 def resolve_record_value(record: dict[str, Any], field_names: list[str]) -> str:
     for field_name in field_names:
         value = normalize_key(record.get(field_name))
@@ -614,14 +649,58 @@ def resolve_boolean_field(value: Any) -> bool:
     }
 
 
+def resolve_non_empty_field(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) > 0
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def fetch_deal_fields_metadata(session: requests.Session, settings: Settings) -> dict[str, Any]:
+    method_url = build_bitrix_method_url(settings.bitrix_webhook_url, "crm.deal.fields")
+    response = session.get(method_url, timeout=settings.bitrix_request_timeout)
+    response.raise_for_status()
+    payload = response.json()
+    if "error" in payload:
+        raise RuntimeError(f"Bitrix API error: {payload['error']} - {payload.get('error_description', '')}")
+    result = payload.get("result", {})
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected Bitrix API response: crm.deal.fields result is not a dict.")
+    return result
+
+
+def resolve_yes_item_ids(field_metadata: dict[str, Any] | None) -> set[str]:
+    if not field_metadata:
+        return set()
+
+    yes_ids: set[str] = set()
+    for item in field_metadata.get("items", []):
+        item_value = normalize_key(item.get("VALUE"))
+        if item_value in {"да", "yes", "true", "y"}:
+            item_id = str(item.get("ID", "")).strip()
+            if item_id:
+                yes_ids.add(item_id)
+    return yes_ids
+
+
 def resolve_deal_closed(record: dict[str, Any], settings: Settings) -> bool:
+    semantic_value = normalize_key(record.get("STAGE_SEMANTIC_ID"))
+    if semantic_value == "s":
+        return True
     stage_value = record.get(settings.bitrix_stage_field)
     if stage_value is None:
         return False
     return normalize_key(stage_value) in settings.bitrix_success_stage_ids
 
 
-def resolve_record_metrics(record: dict[str, Any], settings: Settings) -> UtmMetrics:
+def resolve_deal_record_metrics(
+    record: dict[str, Any],
+    settings: Settings,
+    meeting_show_yes_ids: set[str],
+) -> UtmMetrics:
     approved = False
     meeting = False
     reservation = False
@@ -631,16 +710,25 @@ def resolve_record_metrics(record: dict[str, Any], settings: Settings) -> UtmMet
         approved = resolve_boolean_field(record.get(settings.bitrix_approved_mortgage_field))
 
     if settings.bitrix_meeting_show_field:
-        meeting = resolve_boolean_field(record.get(settings.bitrix_meeting_show_field))
+        meeting_value = record.get(settings.bitrix_meeting_show_field)
+        if meeting_show_yes_ids:
+            if isinstance(meeting_value, (list, tuple, set)):
+                meeting = any(str(item).strip() in meeting_show_yes_ids for item in meeting_value)
+            else:
+                meeting = str(meeting_value or "").strip() in meeting_show_yes_ids
+        else:
+            meeting = resolve_boolean_field(meeting_value)
 
     if settings.bitrix_reservation_field:
-        reservation = resolve_boolean_field(record.get(settings.bitrix_reservation_field))
+        reservation = resolve_non_empty_field(record.get(settings.bitrix_reservation_field))
 
-    if settings.bitrix_success_stage_ids:
-        closed = resolve_deal_closed(record, settings)
+    closed = resolve_deal_closed(record, settings)
 
     metrics = UtmMetrics()
-    metrics.add(approved, meeting, reservation, closed)
+    metrics.approved_mortgage = int(approved)
+    metrics.meeting_show = int(meeting)
+    metrics.reservation = int(reservation)
+    metrics.closed = int(closed)
     return metrics
 
 
@@ -662,11 +750,12 @@ def build_bitrix_session() -> requests.Session:
 def execute_bitrix_list_request(
     session: requests.Session,
     settings: Settings,
+    entity_type: str,
     filters: dict[str, str],
     select_fields: list[str],
     start: int = 0,
 ) -> dict[str, Any]:
-    method = bitrix_method_name(settings.bitrix_entity_type)
+    method = bitrix_method_name(entity_type)
     method_url = build_bitrix_method_url(settings.bitrix_webhook_url, method)
 
     params: list[tuple[str, Any]] = [("start", start)]
@@ -698,21 +787,23 @@ def iterate_dates(start_date: date, end_date: date) -> list[date]:
     return days
 
 
-def build_day_filters(settings: Settings, day_start: datetime, day_end: datetime) -> dict[str, str]:
+def build_day_filters(date_field: str, day_start: datetime, day_end: datetime) -> dict[str, str]:
     return {
-        f">={settings.bitrix_date_field}": day_start.isoformat(timespec="seconds"),
-        f"<={settings.bitrix_date_field}": day_end.isoformat(timespec="seconds"),
+        f">={date_field}": day_start.isoformat(timespec="seconds"),
+        f"<={date_field}": day_end.isoformat(timespec="seconds"),
     }
 
 
-def fetch_day_records(
+def fetch_day_records_for_entity(
     session: requests.Session,
     settings: Settings,
+    entity_type: str,
+    date_field: str,
     day_start: datetime,
     day_end: datetime,
     select_fields: list[str],
 ) -> list[dict[str, Any]]:
-    filters = build_day_filters(settings, day_start, day_end)
+    filters = build_day_filters(date_field, day_start, day_end)
     records: list[dict[str, Any]] = []
     next_page: int | None = 0
 
@@ -720,6 +811,7 @@ def fetch_day_records(
         payload = execute_bitrix_list_request(
             session=session,
             settings=settings,
+            entity_type=entity_type,
             filters=filters,
             select_fields=select_fields,
             start=next_page,
@@ -731,7 +823,7 @@ def fetch_day_records(
     return records
 
 
-def build_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[date, dict[UtmKey, UtmMetrics]], int]:
+def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[date, dict[UtmKey, UtmMetrics]], int]:
     session = build_bitrix_session()
     day_counters: dict[date, dict[UtmKey, UtmMetrics]] = {}
     counted_records = 0
@@ -743,22 +835,21 @@ def build_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[d
         if field_name not in select_fields:
             select_fields.append(field_name)
 
-    for field_name in (
-        [settings.bitrix_stage_field]
-        + [settings.bitrix_approved_mortgage_field]
-        + [settings.bitrix_meeting_show_field]
-        + [settings.bitrix_reservation_field]
-    ):
-        if field_name and field_name not in select_fields:
-            select_fields.append(field_name)
-
     for current_date in iterate_dates(window.start.date(), window.end.date()):
         day_start = datetime.combine(current_date, time.min, tzinfo=window.start.tzinfo)
         day_end = datetime.combine(current_date, time.max, tzinfo=window.start.tzinfo)
         if current_date == window.end.date():
             day_end = window.end
 
-        records = fetch_day_records(session, settings, day_start, day_end, select_fields)
+        records = fetch_day_records_for_entity(
+            session=session,
+            settings=settings,
+            entity_type=settings.bitrix_entity_type,
+            date_field=settings.bitrix_date_field,
+            day_start=day_start,
+            day_end=day_end,
+            select_fields=select_fields,
+        )
         counter: dict[UtmKey, UtmMetrics] = defaultdict(UtmMetrics)
 
         for record in records:
@@ -770,19 +861,109 @@ def build_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[d
             if resolve_allowed_source_label(key) is None:
                 continue
 
-            metrics = resolve_record_metrics(record, settings)
-            counter[key].add(
-                bool(metrics.approved_mortgage),
-                bool(metrics.meeting_show),
-                bool(metrics.reservation),
-                bool(metrics.closed),
-            )
+            counter[key].records += 1
             counted_records += 1
 
         if counter:
             day_counters[current_date] = counter
 
     return day_counters, counted_records
+
+
+def build_daily_deal_metrics(settings: Settings, window: ReportWindow) -> dict[date, dict[UtmKey, UtmMetrics]]:
+    session = build_bitrix_session()
+    day_counters: dict[date, dict[UtmKey, UtmMetrics]] = {}
+    field_candidates = get_deal_utm_field_candidates(settings)
+    deal_fields_metadata = fetch_deal_fields_metadata(session, settings)
+    meeting_show_yes_ids = resolve_yes_item_ids(deal_fields_metadata.get(settings.bitrix_meeting_show_field or ""))
+
+    select_fields = [
+        "ID",
+        "DATE_CREATE",
+        "STAGE_ID",
+        "STAGE_SEMANTIC_ID",
+    ]
+    for field_name in (
+        field_candidates["source"]
+        + field_candidates["medium"]
+        + field_candidates["campaign"]
+        + [
+            settings.bitrix_approved_mortgage_field,
+            settings.bitrix_meeting_show_field,
+            settings.bitrix_reservation_field,
+        ]
+    ):
+        if field_name and field_name not in select_fields:
+            select_fields.append(field_name)
+
+    for current_date in iterate_dates(window.start.date(), window.end.date()):
+        day_start = datetime.combine(current_date, time.min, tzinfo=window.start.tzinfo)
+        day_end = datetime.combine(current_date, time.max, tzinfo=window.start.tzinfo)
+        if current_date == window.end.date():
+            day_end = window.end
+
+        records = fetch_day_records_for_entity(
+            session=session,
+            settings=settings,
+            entity_type="deal",
+            date_field="DATE_CREATE",
+            day_start=day_start,
+            day_end=day_end,
+            select_fields=select_fields,
+        )
+        counter: dict[UtmKey, UtmMetrics] = defaultdict(UtmMetrics)
+
+        for record in records:
+            key = resolve_record_utm_key(record, field_candidates)
+            if not (key.utm_source and key.utm_medium and key.utm_campaign):
+                continue
+            if resolve_allowed_source_label(key) is None:
+                continue
+
+            metrics = resolve_deal_record_metrics(record, settings, meeting_show_yes_ids)
+            target = counter[key]
+            target.approved_mortgage += metrics.approved_mortgage
+            target.meeting_show += metrics.meeting_show
+            target.reservation += metrics.reservation
+            target.closed += metrics.closed
+
+        if counter:
+            day_counters[current_date] = counter
+
+    return day_counters
+
+
+def overlay_deal_metrics(
+    primary_counts: dict[date, dict[UtmKey, UtmMetrics]],
+    deal_metrics: dict[date, dict[UtmKey, UtmMetrics]],
+) -> dict[date, dict[UtmKey, UtmMetrics]]:
+    merged_counts: dict[date, dict[UtmKey, UtmMetrics]] = {
+        current_date: {
+            key: UtmMetrics(
+                records=metrics.records,
+                approved_mortgage=metrics.approved_mortgage,
+                meeting_show=metrics.meeting_show,
+                reservation=metrics.reservation,
+                closed=metrics.closed,
+            )
+            for key, metrics in day_counter.items()
+        }
+        for current_date, day_counter in primary_counts.items()
+    }
+
+    for current_date, day_counter in deal_metrics.items():
+        if current_date not in merged_counts:
+            continue
+        for key, metrics in day_counter.items():
+            if key not in merged_counts[current_date]:
+                continue
+            target = merged_counts[current_date][key]
+            target.approved_mortgage += metrics.approved_mortgage
+            target.meeting_show += metrics.meeting_show
+            target.reservation += metrics.reservation
+            target.closed += metrics.closed
+
+    return merged_counts
 
 
 def fetch_header_rows(service: Any, context: SheetContext) -> list[list[Any]]:
@@ -827,6 +1008,29 @@ def find_header_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
             column_map[canonical_name] = column_index
 
     return max(matched_rows), column_map
+
+
+def ensure_metric_header_columns(
+    rows: list[list[Any]],
+    column_map: dict[str, int],
+) -> tuple[list[list[Any]], dict[str, int]]:
+    updated_rows = [list(row) for row in rows]
+    next_column = column_map["total"] + 1
+
+    for canonical_name in ("approved_mortgage", "meeting_show", "reservation", "closed_deals"):
+        if canonical_name in column_map:
+            continue
+        if next_column >= len(updated_rows[0]):
+            raise ConfigError(
+                "GOOGLE_ALLOWED_RANGE is too narrow for the required report columns."
+            )
+        updated_rows[0][next_column] = METRIC_COLUMN_TITLES[canonical_name]
+        if len(updated_rows) > 1:
+            updated_rows[1][next_column] = ""
+        column_map[canonical_name] = next_column
+        next_column += 1
+
+    return updated_rows, column_map
 
 
 def find_first_matching_alias(rows: list[list[Any]], aliases: set[str]) -> tuple[int, int] | None:
@@ -1102,6 +1306,30 @@ def clear_report_values(service: Any, context: SheetContext, header_rows: int) -
     ).execute()
 
 
+def clear_report_body_merges(service: Any, context: SheetContext, header_rows: int) -> None:
+    merge_start_row = context.allowed_range.start_row + header_rows
+    if merge_start_row > context.allowed_range.end_row:
+        return
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=context.spreadsheet_id,
+        body={
+            "requests": [
+                {
+                    "unmergeCells": {
+                        "range": {
+                            "sheetId": context.sheet_id,
+                            "startRowIndex": merge_start_row - 1,
+                            "endRowIndex": context.allowed_range.end_row,
+                            "startColumnIndex": a1_to_col_index(context.allowed_range.start_col),
+                            "endColumnIndex": a1_to_col_index(context.allowed_range.end_col) + 1,
+                        }
+                    }
+                }
+            ]
+        },
+    ).execute()
+
+
 def clear_sheet_values(service: Any, spreadsheet_id: str, sheet_title: str) -> None:
     escaped_title = sheet_title.replace("'", "''")
     quoted_title = sheet_title if re.fullmatch(r"[A-Za-z0-9_]+", sheet_title) else f"'{escaped_title}'"
@@ -1272,6 +1500,60 @@ def apply_summary_row_formatting(service: Any, context: SheetContext, result: Re
     ).execute()
 
 
+def apply_metric_header_formatting(service: Any, context: SheetContext, column_map: dict[str, int]) -> None:
+    base_col = a1_to_col_index(context.allowed_range.start_col)
+    requests: list[dict[str, Any]] = []
+
+    for canonical_name in ("approved_mortgage", "meeting_show", "reservation", "closed_deals"):
+        column_index = column_map.get(canonical_name)
+        if column_index is None:
+            continue
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": context.sheet_id,
+                        "startRowIndex": context.allowed_range.start_row - 1,
+                        "endRowIndex": context.allowed_range.start_row + 1,
+                        "startColumnIndex": base_col + column_index,
+                        "endColumnIndex": base_col + column_index + 1,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {
+                                "red": 0.7882353,
+                                "green": 0.85490197,
+                                "blue": 0.972549,
+                            },
+                            "horizontalAlignment": "CENTER",
+                            "textFormat": {
+                                "fontFamily": "Arial",
+                                "fontSize": 12,
+                                "bold": False,
+                            },
+                            "borders": {
+                                "top": {"style": "SOLID_MEDIUM"},
+                                "bottom": {"style": "SOLID_MEDIUM"},
+                                "left": {"style": "SOLID_MEDIUM"},
+                                "right": {"style": "SOLID_MEDIUM"},
+                            },
+                        }
+                    },
+                    "fields": (
+                        "userEnteredFormat(backgroundColor,horizontalAlignment,"
+                        "textFormat.fontFamily,textFormat.fontSize,textFormat.bold,borders)"
+                    ),
+                }
+            }
+        )
+
+    if requests:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=context.spreadsheet_id,
+            body={"requests": requests},
+        ).execute()
+
+
 def print_summary(context: SheetContext, result: ReportBuildResult, dry_run: bool) -> None:
     mode_label = "Dry run" if dry_run else "Sync completed"
     print(f"{mode_label}: {context.sheet_title}")
@@ -1292,8 +1574,11 @@ def main() -> int:
         context = resolve_sheet_context(sheets_service, settings)
         header_rows = sanitize_header_rows(fetch_header_rows(sheets_service, context))
         header_row_index, column_map = find_header_columns(header_rows)
+        header_rows, column_map = ensure_metric_header_columns(header_rows, column_map)
 
-        day_counters, _ = build_daily_counts(settings, window)
+        primary_day_counters, _ = build_primary_daily_counts(settings, window)
+        deal_day_metrics = build_daily_deal_metrics(settings, window)
+        day_counters = overlay_deal_metrics(primary_day_counters, deal_day_metrics)
         result = build_report_rows(
             daily_counts=day_counters,
             width=context.allowed_range.width,
@@ -1308,7 +1593,9 @@ def main() -> int:
 
         if not args.dry_run:
             clear_report_values(sheets_service, context, header_row_index + 1)
+            clear_report_body_merges(sheets_service, context, header_row_index + 1)
             write_report_rows(sheets_service, context, result.rows)
+            apply_metric_header_formatting(sheets_service, context, column_map)
             apply_row_groups(sheets_service, context, result)
             apply_summary_row_formatting(sheets_service, context, result)
             summary_target = ensure_sheet_exists(
