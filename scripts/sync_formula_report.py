@@ -21,11 +21,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SOURCE_MAP = {
-    "leadit": "Лидген КЦ",
-    "selfwalk": "Самоход",
-    "avito": "Авито",
-    "recommendation": "Рекомендация",
+ALLOWED_UTM_RULES = {
+    ("leadit", "cpa", "frml"): "Лидген КЦ",
+    ("selfwalk", "organic", "frml"): "Самоход",
+    ("avito", "cpc", "frml"): "Авито",
+    ("recommendation", "call", "frml"): "Рекомендация",
 }
 LEAD_FALLBACK_UTM_FIELDS = {
     "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
@@ -63,6 +63,12 @@ HEADER_ALIASES = {
         "sum",
         "total",
     },
+}
+LEGACY_SUMMARY_BLOCK_LABELS = {
+    "итог по источникам",
+    "период",
+    "источник",
+    "суммарный объем",
 }
 
 
@@ -140,6 +146,7 @@ class ReportBuildResult:
     rows: list[list[Any]]
     month_groups: list[tuple[int, int]]
     day_groups: list[tuple[int, int]]
+    summary_rows: list[int]
     month_count: int
     day_count: int
     detail_count: int
@@ -217,6 +224,14 @@ def read_int(name: str, default: int) -> int:
 def load_settings() -> Settings:
     google_service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip() or None
     google_service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip() or None
+
+    if not google_service_account_file and google_service_account_json:
+        candidate_path = Path(google_service_account_json)
+        if not candidate_path.is_absolute():
+            candidate_path = Path.cwd() / candidate_path
+        if candidate_path.exists() and candidate_path.suffix.lower() == ".json":
+            google_service_account_file = str(candidate_path)
+            google_service_account_json = None
 
     if not google_service_account_file:
         credentials_dir = Path.cwd() / "Credentials"
@@ -620,6 +635,9 @@ def build_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[d
                 if settings.report_require_all_utm:
                     continue
 
+            if resolve_allowed_source_label(key) is None:
+                continue
+
             counter[key] += 1
             counted_records += 1
 
@@ -643,21 +661,34 @@ def fetch_header_rows(service: Any, context: SheetContext) -> list[list[Any]]:
 
 
 def find_header_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
+    required_columns = ("utm_source", "utm_medium", "utm_campaign", "date_created", "total")
+    column_map: dict[str, int] = {}
+    matched_rows: list[int] = []
+
+    for canonical_name in required_columns:
+        match = find_first_matching_alias(rows, HEADER_ALIASES[canonical_name])
+        if match is None:
+            raise ConfigError(
+                "Could not find required columns: utm source, utm medium, utm campaign, Дата создания, Объем."
+            )
+        row_index, column_index = match
+        column_map[canonical_name] = column_index
+        matched_rows.append(row_index)
+
+    number_match = find_first_matching_alias(rows, HEADER_ALIASES["number"])
+    if number_match is not None:
+        _, number_column = number_match
+        column_map["number"] = number_column
+
+    return max(matched_rows), column_map
+
+
+def find_first_matching_alias(rows: list[list[Any]], aliases: set[str]) -> tuple[int, int] | None:
     for row_index, row in enumerate(rows):
-        column_map: dict[str, int] = {}
-        for canonical_name, aliases in HEADER_ALIASES.items():
-            for column_index, cell in enumerate(row):
-                if cell_matches_alias(cell, aliases):
-                    column_map[canonical_name] = column_index
-                    break
-
-        required = {"utm_source", "utm_medium", "utm_campaign", "period", "source", "total"}
-        if required.issubset(column_map):
-            return row_index, column_map
-
-    raise ConfigError(
-        "Could not find a header row with columns: utm source, utm medium, utm campaign, Период, Источник, Суммарный объем."
-    )
+        for column_index, cell in enumerate(row):
+            if cell_matches_alias(cell, aliases):
+                return row_index, column_index
+    return None
 
 
 def find_first_matching_column(rows: list[list[Any]], aliases: set[str]) -> int | None:
@@ -666,6 +697,30 @@ def find_first_matching_column(rows: list[list[Any]], aliases: set[str]) -> int 
             if cell_matches_alias(cell, aliases):
                 return column_index
     return None
+
+
+def sanitize_header_rows(rows: list[list[Any]]) -> list[list[Any]]:
+    sanitized_rows = [list(row) for row in rows]
+    matched_cells: list[tuple[int, int]] = []
+
+    for row_index, row in enumerate(sanitized_rows):
+        for column_index, cell in enumerate(row):
+            if normalize_text(cell) in LEGACY_SUMMARY_BLOCK_LABELS:
+                matched_cells.append((row_index, column_index))
+
+    if not matched_cells:
+        return sanitized_rows
+
+    min_row = min(row_index for row_index, _ in matched_cells)
+    max_row = max(row_index for row_index, _ in matched_cells)
+    min_col = min(column_index for _, column_index in matched_cells)
+    max_col = max(column_index for _, column_index in matched_cells)
+
+    for row_index in range(min_row, max_row + 1):
+        for column_index in range(min_col, max_col + 1):
+            sanitized_rows[row_index][column_index] = ""
+
+    return sanitized_rows
 
 
 def month_summary_label(year: int, month: int) -> str:
@@ -684,7 +739,15 @@ def resolve_source_label(raw_source: str, unknown_source: str) -> str:
     normalized_source = normalize_key(raw_source)
     if not normalized_source:
         return unknown_source
-    return SOURCE_MAP.get(normalized_source, normalized_source)
+    return normalized_source
+
+
+def resolve_allowed_source_label(key: UtmKey) -> str | None:
+    return ALLOWED_UTM_RULES.get((key.utm_source, key.utm_medium, key.utm_campaign))
+
+
+def format_sheet_date(current_date: date) -> str:
+    return current_date.strftime("%d.%m.%Y")
 
 
 def build_row(width: int) -> list[Any]:
@@ -697,18 +760,19 @@ def build_report_rows(
     header_rows: list[list[Any]],
     header_row_index: int,
     column_map: dict[str, int],
-    unknown_source: str,
 ) -> ReportBuildResult:
     output_rows = [list(row) for row in header_rows[: header_row_index + 1]]
     detail_number = 1
     month_groups: list[tuple[int, int]] = []
     day_groups: list[tuple[int, int]] = []
+    summary_rows: list[int] = []
     month_count = 0
     day_count = 0
     detail_count = 0
     record_count = sum(sum(counter.values()) for counter in daily_counts.values())
 
-    date_column = column_map.get("date_created")
+    date_column = column_map["date_created"]
+    total_column = column_map["total"]
     number_column = column_map.get("number")
 
     grouped_by_month: dict[tuple[int, int], dict[date, Counter[UtmKey]]] = defaultdict(dict)
@@ -720,9 +784,10 @@ def build_report_rows(
         month_days = grouped_by_month[month_key]
         month_total = sum(sum(counter.values()) for counter in month_days.values())
         month_row = build_row(width)
-        month_row[column_map["period"]] = month_summary_label(year, month)
-        month_row[column_map["total"]] = month_total
+        month_row[date_column] = month_summary_label(year, month)
+        month_row[total_column] = month_total
         output_rows.append(month_row)
+        summary_rows.append(len(output_rows))
         month_count += 1
 
         month_group_start = len(output_rows) + 1
@@ -733,9 +798,10 @@ def build_report_rows(
             day_total = sum(day_counter.values())
 
             day_row = build_row(width)
-            day_row[column_map["period"]] = day_summary_label(current_date)
-            day_row[column_map["total"]] = day_total
+            day_row[date_column] = day_summary_label(current_date)
+            day_row[total_column] = day_total
             output_rows.append(day_row)
+            summary_rows.append(len(output_rows))
             day_count += 1
             month_child_started = True
 
@@ -756,10 +822,8 @@ def build_report_rows(
                 detail_row[column_map["utm_source"]] = key.utm_source
                 detail_row[column_map["utm_medium"]] = key.utm_medium
                 detail_row[column_map["utm_campaign"]] = key.utm_campaign
-                if date_column is not None:
-                    detail_row[date_column] = current_date.isoformat()
-                detail_row[column_map["source"]] = resolve_source_label(key.utm_source, unknown_source)
-                detail_row[column_map["total"]] = day_counter[key]
+                detail_row[date_column] = format_sheet_date(current_date)
+                detail_row[total_column] = day_counter[key]
                 output_rows.append(detail_row)
                 detail_number += 1
                 detail_count += 1
@@ -775,6 +839,7 @@ def build_report_rows(
         rows=output_rows,
         month_groups=month_groups,
         day_groups=day_groups,
+        summary_rows=summary_rows,
         month_count=month_count,
         day_count=day_count,
         detail_count=detail_count,
@@ -792,7 +857,7 @@ def build_source_summary_rows(
     for current_date, counter in daily_counts.items():
         month_key = (current_date.year, current_date.month)
         for utm_key, amount in counter.items():
-            source_label = resolve_source_label(utm_key.utm_source, unknown_source)
+            source_label = resolve_allowed_source_label(utm_key) or unknown_source
             monthly_source_totals[month_key][source_label] += amount
             overall_source_totals[source_label] += amount
 
@@ -945,6 +1010,38 @@ def apply_row_groups(service: Any, context: SheetContext, result: ReportBuildRes
     ).execute()
 
 
+def apply_summary_row_formatting(service: Any, context: SheetContext, result: ReportBuildResult) -> None:
+    if not result.summary_rows:
+        return
+
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": context.sheet_id,
+                    "startRowIndex": row_number - 1,
+                    "endRowIndex": row_number,
+                    "startColumnIndex": a1_to_col_index(context.allowed_range.start_col),
+                    "endColumnIndex": a1_to_col_index(context.allowed_range.end_col) + 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {"bold": True},
+                    }
+                },
+                "fields": "userEnteredFormat(horizontalAlignment,textFormat.bold)",
+            }
+        }
+        for row_number in result.summary_rows
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=context.spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+
+
 def print_summary(context: SheetContext, result: ReportBuildResult, dry_run: bool) -> None:
     mode_label = "Dry run" if dry_run else "Sync completed"
     print(f"{mode_label}: {context.sheet_title}")
@@ -963,17 +1060,8 @@ def main() -> int:
         window = resolve_report_window(settings)
         sheets_service = build_sheets_service(settings)
         context = resolve_sheet_context(sheets_service, settings)
-        header_rows = fetch_header_rows(sheets_service, context)
+        header_rows = sanitize_header_rows(fetch_header_rows(sheets_service, context))
         header_row_index, column_map = find_header_columns(header_rows)
-
-        if "number" not in column_map:
-            number_column = find_first_matching_column(header_rows, HEADER_ALIASES["number"])
-            if number_column is not None:
-                column_map["number"] = number_column
-        if "date_created" not in column_map:
-            date_column = find_first_matching_column(header_rows, HEADER_ALIASES["date_created"])
-            if date_column is not None:
-                column_map["date_created"] = date_column
 
         day_counters, _ = build_daily_counts(settings, window)
         result = build_report_rows(
@@ -982,7 +1070,6 @@ def main() -> int:
             header_rows=header_rows,
             header_row_index=header_row_index,
             column_map=column_map,
-            unknown_source=settings.report_unknown_source,
         )
         source_summary_rows = build_source_summary_rows(
             daily_counts=day_counters,
@@ -993,6 +1080,7 @@ def main() -> int:
             clear_report_values(sheets_service, context, header_row_index + 1)
             write_report_rows(sheets_service, context, result.rows)
             apply_row_groups(sheets_service, context, result)
+            apply_summary_row_formatting(sheets_service, context, result)
             summary_target = ensure_sheet_exists(
                 sheets_service,
                 context.spreadsheet_id,
