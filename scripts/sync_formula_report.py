@@ -1635,6 +1635,75 @@ def apply_report_body_alignment(
     ).execute()
 
 
+def apply_detail_date_format(
+    service: Any,
+    context: SheetContext,
+    result: ReportBuildResult,
+    header_rows: int,
+    date_column: int,
+) -> None:
+    first_body_row = context.allowed_range.start_row + header_rows
+    last_body_row = context.allowed_range.start_row + len(result.rows) - 1
+    summary_row_set = set(result.summary_rows)
+    requests: list[dict[str, Any]] = []
+
+    for row_number in range(first_body_row, last_body_row + 1):
+        if row_number in summary_row_set:
+            continue
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": context.sheet_id,
+                        "startRowIndex": row_number - 1,
+                        "endRowIndex": row_number,
+                        "startColumnIndex": a1_to_col_index(context.allowed_range.start_col) + date_column,
+                        "endColumnIndex": a1_to_col_index(context.allowed_range.start_col) + date_column + 1,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "numberFormat": {
+                                "type": "DATE",
+                                "pattern": "dd.mm.yyyy",
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.numberFormat",
+                }
+            }
+        )
+
+    if requests:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=context.spreadsheet_id,
+            body={"requests": requests},
+        ).execute()
+
+
+def rewrite_date_column_as_text(
+    service: Any,
+    context: SheetContext,
+    result: ReportBuildResult,
+    header_rows: int,
+    date_column: int,
+) -> None:
+    body_start_row = context.allowed_range.start_row + header_rows
+    if body_start_row > context.allowed_range.end_row:
+        return
+
+    date_col_label = chr(ord("A") + a1_to_col_index(context.allowed_range.start_col) + date_column)
+    body_values = [[row[date_column] if date_column < len(row) else ""] for row in result.rows[header_rows:]]
+    escaped_title = context.sheet_title.replace("'", "''")
+    quoted_title = context.sheet_title if re.fullmatch(r"[A-Za-z0-9_]+", context.sheet_title) else f"'{escaped_title}'"
+    end_row = body_start_row + len(body_values) - 1
+    service.spreadsheets().values().update(
+        spreadsheetId=context.spreadsheet_id,
+        range=f"{quoted_title}!{date_col_label}{body_start_row}:{date_col_label}{end_row}",
+        valueInputOption="RAW",
+        body={"majorDimension": "ROWS", "values": body_values},
+    ).execute()
+
+
 def apply_sheet_alignment(
     service: Any,
     spreadsheet_id: str,
@@ -1733,6 +1802,13 @@ def main() -> int:
             clear_report_values(sheets_service, context, header_row_index + 1)
             clear_report_body_merges(sheets_service, context, header_row_index + 1)
             write_report_rows(sheets_service, context, result.rows)
+            rewrite_date_column_as_text(
+                sheets_service,
+                context,
+                result,
+                header_row_index + 1,
+                column_map["date_created"],
+            )
             apply_metric_header_formatting(sheets_service, context, column_map)
             apply_row_groups(sheets_service, context, result)
             apply_summary_row_formatting(sheets_service, context, result)
@@ -1741,6 +1817,13 @@ def main() -> int:
                 context,
                 header_row_index + 1,
                 len(result.rows),
+            )
+            apply_detail_date_format(
+                sheets_service,
+                context,
+                result,
+                header_row_index + 1,
+                column_map["date_created"],
             )
             summary_target = ensure_sheet_exists(
                 sheets_service,
