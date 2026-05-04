@@ -5,7 +5,7 @@ import json
 import os
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -1261,31 +1261,76 @@ def build_source_summary_rows(
     daily_counts: dict[date, dict[UtmKey, UtmMetrics]],
     unknown_source: str,
 ) -> list[list[Any]]:
-    monthly_source_totals: dict[tuple[int, int], Counter[str]] = defaultdict(Counter)
-    overall_source_totals: Counter[str] = Counter()
+    monthly_source_totals: dict[tuple[int, int], dict[str, UtmMetrics]] = defaultdict(dict)
+    overall_source_totals: dict[str, UtmMetrics] = {}
 
     for current_date, counter in daily_counts.items():
         month_key = (current_date.year, current_date.month)
         for utm_key, metrics in counter.items():
             source_label = resolve_allowed_source_label(utm_key) or unknown_source
-            monthly_source_totals[month_key][source_label] += metrics.records
-            overall_source_totals[source_label] += metrics.records
+            month_metrics = monthly_source_totals[month_key].setdefault(source_label, UtmMetrics())
+            month_metrics.records += metrics.records
+            month_metrics.approved_mortgage += metrics.approved_mortgage
+            month_metrics.meeting_show += metrics.meeting_show
+            month_metrics.reservation += metrics.reservation
+            month_metrics.closed += metrics.closed
 
-    rows: list[list[Any]] = [["Период", "Источник", "Суммарный объем"]]
+            overall_metrics = overall_source_totals.setdefault(source_label, UtmMetrics())
+            overall_metrics.records += metrics.records
+            overall_metrics.approved_mortgage += metrics.approved_mortgage
+            overall_metrics.meeting_show += metrics.meeting_show
+            overall_metrics.reservation += metrics.reservation
+            overall_metrics.closed += metrics.closed
+
+    rows: list[list[Any]] = [[
+        "Период",
+        "Источник",
+        "Суммарный объем",
+        "Одобрена ипотека",
+        "Проведена встреча/показ",
+        "Зафиксирована бронь",
+        "Закрыто сделок",
+    ]]
     for month_key in sorted(monthly_source_totals):
         year, month = month_key
         period_label = month_period_label(year, month)
         for source_label in sorted(monthly_source_totals[month_key]):
-            rows.append([period_label, source_label, monthly_source_totals[month_key][source_label]])
+            metrics = monthly_source_totals[month_key][source_label]
+            rows.append([
+                period_label,
+                source_label,
+                metrics.records,
+                metrics.approved_mortgage,
+                metrics.meeting_show,
+                metrics.reservation,
+                metrics.closed,
+            ])
 
-    if rows == [["Период", "Источник", "Суммарный объем"]]:
-        rows.append(["Все время", unknown_source, 0])
+    if rows == [[
+        "Период",
+        "Источник",
+        "Суммарный объем",
+        "Одобрена ипотека",
+        "Проведена встреча/показ",
+        "Зафиксирована бронь",
+        "Закрыто сделок",
+    ]]:
+        rows.append(["Все время", unknown_source, 0, 0, 0, 0, 0])
         return rows
 
     rows.append([])
-    rows.append(["Все время", "", ""])
+    rows.append(["Все время", "", "", "", "", "", ""])
     for source_label in sorted(overall_source_totals):
-        rows.append(["Все время", source_label, overall_source_totals[source_label]])
+        metrics = overall_source_totals[source_label]
+        rows.append([
+            "Все время",
+            source_label,
+            metrics.records,
+            metrics.approved_mortgage,
+            metrics.meeting_show,
+            metrics.reservation,
+            metrics.closed,
+        ])
 
     return rows
 
@@ -1554,6 +1599,99 @@ def apply_metric_header_formatting(service: Any, context: SheetContext, column_m
         ).execute()
 
 
+def apply_report_body_alignment(
+    service: Any,
+    context: SheetContext,
+    header_rows: int,
+    written_rows: int,
+) -> None:
+    body_start_row = context.allowed_range.start_row + header_rows
+    body_end_row = context.allowed_range.start_row + written_rows - 1
+    if body_start_row > body_end_row:
+        return
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=context.spreadsheet_id,
+        body={
+            "requests": [
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": context.sheet_id,
+                            "startRowIndex": body_start_row - 1,
+                            "endRowIndex": body_end_row,
+                            "startColumnIndex": a1_to_col_index(context.allowed_range.start_col),
+                            "endColumnIndex": a1_to_col_index(context.allowed_range.end_col) + 1,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "horizontalAlignment": "LEFT",
+                            }
+                        },
+                        "fields": "userEnteredFormat.horizontalAlignment",
+                    }
+                }
+            ]
+        },
+    ).execute()
+
+
+def apply_sheet_alignment(
+    service: Any,
+    spreadsheet_id: str,
+    sheet_id: int,
+    row_count: int,
+    column_count: int,
+) -> None:
+    if row_count <= 0 or column_count <= 0:
+        return
+
+    requests: list[dict[str, Any]] = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": column_count,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat.horizontalAlignment",
+            }
+        }
+    ]
+
+    if row_count > 1:
+        requests.append(
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,
+                        "endRowIndex": row_count,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": column_count,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "horizontalAlignment": "LEFT",
+                        }
+                    },
+                    "fields": "userEnteredFormat.horizontalAlignment",
+                }
+            }
+        )
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+
+
 def print_summary(context: SheetContext, result: ReportBuildResult, dry_run: bool) -> None:
     mode_label = "Dry run" if dry_run else "Sync completed"
     print(f"{mode_label}: {context.sheet_title}")
@@ -1598,6 +1736,12 @@ def main() -> int:
             apply_metric_header_formatting(sheets_service, context, column_map)
             apply_row_groups(sheets_service, context, result)
             apply_summary_row_formatting(sheets_service, context, result)
+            apply_report_body_alignment(
+                sheets_service,
+                context,
+                header_row_index + 1,
+                len(result.rows),
+            )
             summary_target = ensure_sheet_exists(
                 sheets_service,
                 context.spreadsheet_id,
@@ -1613,6 +1757,13 @@ def main() -> int:
                 context.spreadsheet_id,
                 summary_target.sheet_title,
                 source_summary_rows,
+            )
+            apply_sheet_alignment(
+                sheets_service,
+                context.spreadsheet_id,
+                summary_target.sheet_id,
+                len(source_summary_rows),
+                max(len(row) for row in source_summary_rows),
             )
 
         print_summary(context, result, args.dry_run)
