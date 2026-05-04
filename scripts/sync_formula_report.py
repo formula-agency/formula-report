@@ -226,12 +226,19 @@ def load_settings() -> Settings:
     google_service_account_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip() or None
 
     if not google_service_account_file and google_service_account_json:
-        candidate_path = Path(google_service_account_json)
-        if not candidate_path.is_absolute():
-            candidate_path = Path.cwd() / candidate_path
-        if candidate_path.exists() and candidate_path.suffix.lower() == ".json":
-            google_service_account_file = str(candidate_path)
-            google_service_account_json = None
+        looks_like_file_path = (
+            "\n" not in google_service_account_json
+            and "\r" not in google_service_account_json
+            and "{" not in google_service_account_json
+            and google_service_account_json.lower().endswith(".json")
+        )
+        if looks_like_file_path:
+            candidate_path = Path(google_service_account_json)
+            if not candidate_path.is_absolute():
+                candidate_path = Path.cwd() / candidate_path
+            if candidate_path.exists():
+                google_service_account_file = str(candidate_path)
+                google_service_account_json = None
 
     if not google_service_account_file:
         credentials_dir = Path.cwd() / "Credentials"
