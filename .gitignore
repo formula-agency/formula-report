@@ -1,0 +1,7 @@
+.env
+.env.local
+.env.*.local
+bitrix.env
+Credentials/*.json
+.venv/
+__pycache__/

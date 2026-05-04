@@ -1,0 +1,42 @@
+name: Update Formula Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 1 * * *"
+
+jobs:
+  sync-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync Google Sheets report
+        env:
+          BITRIX_WEBHOOK_URL: ${{ secrets.BITRIX_WEBHOOK_URL }}
+          BITRIX_ENTITY_TYPE: ${{ secrets.BITRIX_ENTITY_TYPE }}
+          BITRIX_DATE_FIELD: ${{ secrets.BITRIX_DATE_FIELD }}
+          BITRIX_UTM_SOURCE_FIELD: ${{ secrets.BITRIX_UTM_SOURCE_FIELD }}
+          BITRIX_UTM_MEDIUM_FIELD: ${{ secrets.BITRIX_UTM_MEDIUM_FIELD }}
+          BITRIX_UTM_CAMPAIGN_FIELD: ${{ secrets.BITRIX_UTM_CAMPAIGN_FIELD }}
+          BITRIX_REQUEST_TIMEOUT: ${{ secrets.BITRIX_REQUEST_TIMEOUT }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_NAME: ${{ secrets.GOOGLE_SHEET_NAME }}
+          GOOGLE_ALLOWED_RANGE: ${{ secrets.GOOGLE_ALLOWED_RANGE }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          REPORT_TIMEZONE: ${{ secrets.REPORT_TIMEZONE }}
+          REPORT_PERIOD_MODE: ${{ secrets.REPORT_PERIOD_MODE }}
+          REPORT_START_DATE: ${{ secrets.REPORT_START_DATE }}
+          REPORT_REQUIRE_ALL_UTM: ${{ secrets.REPORT_REQUIRE_ALL_UTM }}
+          REPORT_UNKNOWN_SOURCE: ${{ secrets.REPORT_UNKNOWN_SOURCE }}
+        run: python scripts/sync_formula_report.py
