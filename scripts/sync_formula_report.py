@@ -1078,7 +1078,7 @@ def month_summary_label(year: int, month: int) -> str:
 
 
 def day_summary_label(current_date: date) -> str:
-    return f"Итого за {current_date.isoformat()}"
+    return f"Итого за {format_sheet_date(current_date)}"
 
 
 def month_period_label(year: int, month: int) -> str:
