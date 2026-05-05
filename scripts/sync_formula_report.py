@@ -1547,7 +1547,28 @@ def apply_summary_row_formatting(service: Any, context: SheetContext, result: Re
 
 def apply_metric_header_formatting(service: Any, context: SheetContext, column_map: dict[str, int]) -> None:
     base_col = a1_to_col_index(context.allowed_range.start_col)
+    metric_columns = [
+        column_map.get(canonical_name)
+        for canonical_name in ("approved_mortgage", "meeting_show", "reservation", "closed_deals")
+        if column_map.get(canonical_name) is not None
+    ]
+    if not metric_columns:
+        return
+
     requests: list[dict[str, Any]] = []
+    requests.append(
+        {
+            "unmergeCells": {
+                "range": {
+                    "sheetId": context.sheet_id,
+                    "startRowIndex": context.allowed_range.start_row - 1,
+                    "endRowIndex": context.allowed_range.start_row + 1,
+                    "startColumnIndex": base_col + min(metric_columns),
+                    "endColumnIndex": base_col + max(metric_columns) + 1,
+                }
+            }
+        }
+    )
 
     for canonical_name in ("approved_mortgage", "meeting_show", "reservation", "closed_deals"):
         column_index = column_map.get(canonical_name)
@@ -1591,12 +1612,25 @@ def apply_metric_header_formatting(service: Any, context: SheetContext, column_m
                 }
             }
         )
+        requests.append(
+            {
+                "mergeCells": {
+                    "range": {
+                        "sheetId": context.sheet_id,
+                        "startRowIndex": context.allowed_range.start_row - 1,
+                        "endRowIndex": context.allowed_range.start_row + 1,
+                        "startColumnIndex": base_col + column_index,
+                        "endColumnIndex": base_col + column_index + 1,
+                    },
+                    "mergeType": "MERGE_ALL",
+                }
+            }
+        )
 
-    if requests:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=context.spreadsheet_id,
-            body={"requests": requests},
-        ).execute()
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=context.spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
 
 
 def apply_report_body_alignment(
