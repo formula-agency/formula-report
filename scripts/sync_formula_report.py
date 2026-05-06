@@ -317,13 +317,13 @@ def load_settings() -> Settings:
 
     bitrix_entity_type = os.getenv("BITRIX_ENTITY_TYPE", "lead").strip().lower() or "lead"
     default_stage_field = "STAGE_ID" if bitrix_entity_type == "deal" else "STATUS_ID"
-    raw_success_stages = os.getenv("BITRIX_SUCCESS_STAGE_IDS", "").strip()
+    raw_success_stages = os.getenv("BITRIX_SUCCESS_STAGE_IDS", "WON,CLOSED").strip()
     if raw_success_stages:
         bitrix_success_stage_ids = tuple(
             normalize_key(stage) for stage in raw_success_stages.split(",") if stage.strip()
         )
     else:
-        bitrix_success_stage_ids = ()
+        bitrix_success_stage_ids = ("won", "closed", "contract", "success", "complete")
 
     return Settings(
         bitrix_webhook_url=require_env("BITRIX_WEBHOOK_URL"),
@@ -672,32 +672,6 @@ def fetch_deal_fields_metadata(session: requests.Session, settings: Settings) ->
     return result
 
 
-def fetch_closed_deal_stage_ids(session: requests.Session, settings: Settings) -> set[str]:
-    method_url = build_bitrix_method_url(settings.bitrix_webhook_url, "crm.status.list")
-    response = session.get(method_url, timeout=settings.bitrix_request_timeout)
-    response.raise_for_status()
-    payload = response.json()
-    if "error" in payload:
-        raise RuntimeError(f"Bitrix API error: {payload['error']} - {payload.get('error_description', '')}")
-
-    result = payload.get("result", [])
-    if not isinstance(result, list):
-        raise RuntimeError("Unexpected Bitrix API response: crm.status.list result is not a list.")
-
-    closed_stage_ids: set[str] = set()
-    for item in result:
-        entity_id = str(item.get("ENTITY_ID") or "")
-        status_id = normalize_key(item.get("STATUS_ID"))
-        if not entity_id.startswith("DEAL_STAGE"):
-            continue
-        if not status_id:
-            continue
-        if status_id == "won" or status_id.endswith(":won"):
-            closed_stage_ids.add(status_id)
-
-    return closed_stage_ids
-
-
 def resolve_yes_item_ids(field_metadata: dict[str, Any] | None) -> set[str]:
     if not field_metadata:
         return set()
@@ -712,18 +686,20 @@ def resolve_yes_item_ids(field_metadata: dict[str, Any] | None) -> set[str]:
     return yes_ids
 
 
-def resolve_deal_closed(record: dict[str, Any], settings: Settings, closed_stage_ids: set[str]) -> bool:
+def resolve_deal_closed(record: dict[str, Any], settings: Settings) -> bool:
+    semantic_value = normalize_key(record.get("STAGE_SEMANTIC_ID"))
+    if semantic_value == "s":
+        return True
     stage_value = record.get(settings.bitrix_stage_field)
     if stage_value is None:
         return False
-    return normalize_key(stage_value) in closed_stage_ids
+    return normalize_key(stage_value) in settings.bitrix_success_stage_ids
 
 
 def resolve_deal_record_metrics(
     record: dict[str, Any],
     settings: Settings,
     meeting_show_yes_ids: set[str],
-    closed_stage_ids: set[str],
 ) -> UtmMetrics:
     approved = False
     meeting = False
@@ -746,7 +722,7 @@ def resolve_deal_record_metrics(
     if settings.bitrix_reservation_field:
         reservation = resolve_non_empty_field(record.get(settings.bitrix_reservation_field))
 
-    closed = resolve_deal_closed(record, settings, closed_stage_ids)
+    closed = resolve_deal_closed(record, settings)
 
     metrics = UtmMetrics()
     metrics.approved_mortgage = int(approved)
@@ -900,9 +876,6 @@ def build_daily_deal_metrics(settings: Settings, window: ReportWindow) -> dict[d
     field_candidates = get_deal_utm_field_candidates(settings)
     deal_fields_metadata = fetch_deal_fields_metadata(session, settings)
     meeting_show_yes_ids = resolve_yes_item_ids(deal_fields_metadata.get(settings.bitrix_meeting_show_field or ""))
-    closed_stage_ids = set(settings.bitrix_success_stage_ids)
-    if not closed_stage_ids:
-        closed_stage_ids = fetch_closed_deal_stage_ids(session, settings)
 
     select_fields = [
         "ID",
@@ -947,7 +920,7 @@ def build_daily_deal_metrics(settings: Settings, window: ReportWindow) -> dict[d
             if resolve_allowed_source_label(key) is None:
                 continue
 
-            metrics = resolve_deal_record_metrics(record, settings, meeting_show_yes_ids, closed_stage_ids)
+            metrics = resolve_deal_record_metrics(record, settings, meeting_show_yes_ids)
             target = counter[key]
             target.approved_mortgage += metrics.approved_mortgage
             target.meeting_show += metrics.meeting_show
