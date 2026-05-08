@@ -54,6 +54,8 @@ GOOGLE_SHEET_ID=1HJkKDM0k7ZtytAURms7CYX5bjOyLgTsfQW0UU34vceg
 GOOGLE_SHEET_NAME=Показатели
 GOOGLE_ALLOWED_RANGE=A1:Z60601
 GOOGLE_SOURCE_SUMMARY_SHEET_NAME=Итог по источникам
+GOOGLE_MEETING_LOG_SHEET_ID=1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo
+GOOGLE_MEETING_LOG_SHEET_NAME=Meetings
 GOOGLE_SERVICE_ACCOUNT_FILE=Credentials/otchety-493307-a6f2a3a4c466.json
 
 REPORT_TIMEZONE=Asia/Yekaterinburg
@@ -103,7 +105,11 @@ python scripts/sync_formula_report.py --env-file bitrix.env
   - `selfwalk` -> `Самоход`
   - `avito` -> `Авито`
   - `recommendation` -> `Рекомендация`
-- дополнительные метрики берутся по полям сделки и успешным стадиям закрытия
+- `Проведена встреча/показ` считается не по полю сделки, а по отдельной таблице встреч:
+  - берутся только строки со статусом `Прошла успешно`
+  - из строки читается `ID сделки` или `Ссылка на сделку`
+  - затем встреча относится в отчет по `DATE_CREATE` и UTM этой сделки
+- остальные дополнительные метрики берутся по полям сделки и успешным стадиям закрытия
 - если `utm_source` не попал в словарь, в `Источник` пишется само значение `utm_source`
 - для месяцев и дней создаются группировки строк Google Sheets, как на скриншоте
 - на отдельном листе `Итог по источникам` формируется summary без группировок
@@ -140,6 +146,8 @@ Workflow лежит в `.github/workflows/update-report.yml`.
 - `GOOGLE_ALLOWED_RANGE`
 - `GOOGLE_SOURCE_SUMMARY_SHEET_NAME`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
+- `GOOGLE_MEETING_LOG_SHEET_ID`
+- `GOOGLE_MEETING_LOG_SHEET_NAME`
 - `REPORT_TIMEZONE`
 - `REPORT_PERIOD_MODE`
 - `REPORT_START_DATE`
@@ -150,5 +158,6 @@ Workflow лежит в `.github/workflows/update-report.yml`.
 
 - service account должен иметь доступ редактора к Google-таблице
 - `GOOGLE_ALLOWED_RANGE` должен включать шапку и всю рабочую область отчета
+- если таблица встреч переедет, измени `GOOGLE_MEETING_LOG_SHEET_ID` и `GOOGLE_MEETING_LOG_SHEET_NAME`
 - если в `GOOGLE_SHEET_NAME` указано название книги, а не вкладки, скрипт все равно возьмет единственную вкладку
 - скрипт не меняет шапку, ширины, цвета и форматирование, он обновляет значения и группировки строк

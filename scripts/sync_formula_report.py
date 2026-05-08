@@ -27,6 +27,8 @@ ALLOWED_UTM_RULES = {
     ("avito", "cpc", "frml"): "Авито",
     ("recommendation", "call", "frml"): "Рекомендация",
 }
+DEFAULT_MEETING_LOG_SHEET_ID = "1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo"
+DEFAULT_MEETING_LOG_SHEET_NAME = "Meetings"
 LEAD_FALLBACK_UTM_FIELDS = {
     "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
     "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
@@ -88,6 +90,12 @@ HEADER_ALIASES = {
     "reservation": {"зафиксирована бронь", "бронь", "бронирование", "забронирована бронь"},
     "closed_deals": {"закрыто сделок", "закрыто", "закрытые сделки", "closed deals"},
 }
+MEETING_LOG_HEADER_ALIASES = {
+    "status": {"статус", "status", "результат", "result"},
+    "deal_id": {"id сделки", "deal id", "id deal"},
+    "deal_link": {"ссылка на сделку", "deal link", "link"},
+}
+SUCCESSFUL_MEETING_STATUSES = {"прошла успешно"}
 LEGACY_SUMMARY_BLOCK_LABELS = {
     "итог по источникам",
     "период",
@@ -192,6 +200,8 @@ class Settings:
     google_sheet_name: str
     google_allowed_range: str
     google_source_summary_sheet_name: str
+    google_meeting_log_sheet_id: str
+    google_meeting_log_sheet_name: str
     google_service_account_file: str | None
     google_service_account_json: str | None
     report_timezone: str
@@ -351,6 +361,14 @@ def load_settings() -> Settings:
             os.getenv("GOOGLE_SOURCE_SUMMARY_SHEET_NAME", "Итог по источникам").strip()
             or "Итог по источникам"
         ),
+        google_meeting_log_sheet_id=(
+            os.getenv("GOOGLE_MEETING_LOG_SHEET_ID", DEFAULT_MEETING_LOG_SHEET_ID).strip()
+            or DEFAULT_MEETING_LOG_SHEET_ID
+        ),
+        google_meeting_log_sheet_name=(
+            os.getenv("GOOGLE_MEETING_LOG_SHEET_NAME", DEFAULT_MEETING_LOG_SHEET_NAME).strip()
+            or DEFAULT_MEETING_LOG_SHEET_NAME
+        ),
         google_service_account_file=google_service_account_file,
         google_service_account_json=google_service_account_json,
         report_timezone=os.getenv("REPORT_TIMEZONE", "Asia/Yekaterinburg").strip() or "Asia/Yekaterinburg",
@@ -486,6 +504,42 @@ def resolve_sheet_context(service: Any, settings: Settings) -> SheetContext:
         row_count=props.get("gridProperties", {}).get("rowCount", allowed_range.end_row),
         row_groups=selected_sheet.get("rowGroups", []),
     )
+
+
+def resolve_sheet_title(
+    service: Any,
+    spreadsheet_id: str,
+    requested_title: str,
+) -> str:
+    metadata = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="properties(title),sheets(properties(title))")
+        .execute()
+    )
+
+    sheets = metadata.get("sheets", [])
+    if not sheets:
+        raise ConfigError("The target spreadsheet has no sheets.")
+
+    spreadsheet_title = metadata["properties"]["title"]
+    normalized_title = requested_title.strip()
+    selected_sheet = next(
+        (sheet for sheet in sheets if sheet["properties"]["title"] == normalized_title),
+        None,
+    )
+
+    if selected_sheet is None and normalized_title == spreadsheet_title and len(sheets) == 1:
+        selected_sheet = sheets[0]
+    elif selected_sheet is None and len(sheets) == 1:
+        selected_sheet = sheets[0]
+
+    if selected_sheet is None:
+        available = ", ".join(sheet["properties"]["title"] for sheet in sheets)
+        raise ConfigError(
+            f"Sheet '{normalized_title}' not found in spreadsheet {spreadsheet_id}. Available sheets: {available}"
+        )
+
+    return selected_sheet["properties"]["title"]
 
 
 def ensure_sheet_exists(
@@ -659,33 +713,6 @@ def resolve_non_empty_field(value: Any) -> bool:
     return bool(value)
 
 
-def fetch_deal_fields_metadata(session: requests.Session, settings: Settings) -> dict[str, Any]:
-    method_url = build_bitrix_method_url(settings.bitrix_webhook_url, "crm.deal.fields")
-    response = session.get(method_url, timeout=settings.bitrix_request_timeout)
-    response.raise_for_status()
-    payload = response.json()
-    if "error" in payload:
-        raise RuntimeError(f"Bitrix API error: {payload['error']} - {payload.get('error_description', '')}")
-    result = payload.get("result", {})
-    if not isinstance(result, dict):
-        raise RuntimeError("Unexpected Bitrix API response: crm.deal.fields result is not a dict.")
-    return result
-
-
-def resolve_yes_item_ids(field_metadata: dict[str, Any] | None) -> set[str]:
-    if not field_metadata:
-        return set()
-
-    yes_ids: set[str] = set()
-    for item in field_metadata.get("items", []):
-        item_value = normalize_key(item.get("VALUE"))
-        if item_value in {"да", "yes", "true", "y"}:
-            item_id = str(item.get("ID", "")).strip()
-            if item_id:
-                yes_ids.add(item_id)
-    return yes_ids
-
-
 def resolve_deal_closed(record: dict[str, Any], settings: Settings) -> bool:
     semantic_value = normalize_key(record.get("STAGE_SEMANTIC_ID"))
     if semantic_value == "s":
@@ -699,25 +726,14 @@ def resolve_deal_closed(record: dict[str, Any], settings: Settings) -> bool:
 def resolve_deal_record_metrics(
     record: dict[str, Any],
     settings: Settings,
-    meeting_show_yes_ids: set[str],
+    meeting_count: int,
 ) -> UtmMetrics:
     approved = False
-    meeting = False
     reservation = False
     closed = False
 
     if settings.bitrix_approved_mortgage_field:
         approved = resolve_boolean_field(record.get(settings.bitrix_approved_mortgage_field))
-
-    if settings.bitrix_meeting_show_field:
-        meeting_value = record.get(settings.bitrix_meeting_show_field)
-        if meeting_show_yes_ids:
-            if isinstance(meeting_value, (list, tuple, set)):
-                meeting = any(str(item).strip() in meeting_show_yes_ids for item in meeting_value)
-            else:
-                meeting = str(meeting_value or "").strip() in meeting_show_yes_ids
-        else:
-            meeting = resolve_boolean_field(meeting_value)
 
     if settings.bitrix_reservation_field:
         reservation = resolve_non_empty_field(record.get(settings.bitrix_reservation_field))
@@ -726,7 +742,7 @@ def resolve_deal_record_metrics(
 
     metrics = UtmMetrics()
     metrics.approved_mortgage = int(approved)
-    metrics.meeting_show = int(meeting)
+    metrics.meeting_show = max(meeting_count, 0)
     metrics.reservation = int(reservation)
     metrics.closed = int(closed)
     return metrics
@@ -823,6 +839,54 @@ def fetch_day_records_for_entity(
     return records
 
 
+def build_successful_meeting_counts_by_deal(service: Any, settings: Settings) -> dict[str, int]:
+    sheet_title = resolve_sheet_title(
+        service,
+        settings.google_meeting_log_sheet_id,
+        settings.google_meeting_log_sheet_name,
+    )
+    values = (
+        service.spreadsheets()
+        .values()
+        .get(
+            spreadsheetId=settings.google_meeting_log_sheet_id,
+            range=f"'{sheet_title}'!A:Z",
+            majorDimension="ROWS",
+        )
+        .execute()
+        .get("values", [])
+    )
+
+    if not values:
+        return {}
+
+    header_row_index, column_map = find_meeting_log_columns(values)
+    successful_counts: dict[str, int] = defaultdict(int)
+
+    for row in values[header_row_index + 1 :]:
+        status_index = column_map["status"]
+        status_value = row[status_index] if status_index < len(row) else ""
+        if normalize_text(status_value) not in SUCCESSFUL_MEETING_STATUSES:
+            continue
+
+        deal_id = ""
+        deal_id_index = column_map.get("deal_id")
+        if deal_id_index is not None and deal_id_index < len(row):
+            deal_id = parse_numeric_id(row[deal_id_index])
+
+        if not deal_id:
+            deal_link_index = column_map.get("deal_link")
+            if deal_link_index is not None and deal_link_index < len(row):
+                deal_id = extract_deal_id_from_link(row[deal_link_index])
+
+        if not deal_id:
+            continue
+
+        successful_counts[deal_id] += 1
+
+    return dict(successful_counts)
+
+
 def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[date, dict[UtmKey, UtmMetrics]], int]:
     session = build_bitrix_session()
     day_counters: dict[date, dict[UtmKey, UtmMetrics]] = {}
@@ -870,12 +934,14 @@ def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tupl
     return day_counters, counted_records
 
 
-def build_daily_deal_metrics(settings: Settings, window: ReportWindow) -> dict[date, dict[UtmKey, UtmMetrics]]:
+def build_daily_deal_metrics(
+    settings: Settings,
+    window: ReportWindow,
+    successful_meeting_counts: dict[str, int],
+) -> dict[date, dict[UtmKey, UtmMetrics]]:
     session = build_bitrix_session()
     day_counters: dict[date, dict[UtmKey, UtmMetrics]] = {}
     field_candidates = get_deal_utm_field_candidates(settings)
-    deal_fields_metadata = fetch_deal_fields_metadata(session, settings)
-    meeting_show_yes_ids = resolve_yes_item_ids(deal_fields_metadata.get(settings.bitrix_meeting_show_field or ""))
 
     select_fields = [
         "ID",
@@ -889,7 +955,6 @@ def build_daily_deal_metrics(settings: Settings, window: ReportWindow) -> dict[d
         + field_candidates["campaign"]
         + [
             settings.bitrix_approved_mortgage_field,
-            settings.bitrix_meeting_show_field,
             settings.bitrix_reservation_field,
         ]
     ):
@@ -920,7 +985,9 @@ def build_daily_deal_metrics(settings: Settings, window: ReportWindow) -> dict[d
             if resolve_allowed_source_label(key) is None:
                 continue
 
-            metrics = resolve_deal_record_metrics(record, settings, meeting_show_yes_ids)
+            deal_id = str(record.get("ID") or "").strip()
+            meeting_count = successful_meeting_counts.get(deal_id, 0)
+            metrics = resolve_deal_record_metrics(record, settings, meeting_count)
             target = counter[key]
             target.approved_mortgage += metrics.approved_mortgage
             target.meeting_show += metrics.meeting_show
@@ -1047,6 +1114,47 @@ def find_first_matching_column(rows: list[list[Any]], aliases: set[str]) -> int 
             if cell_matches_alias(cell, aliases):
                 return column_index
     return None
+
+
+def parse_numeric_id(value: Any) -> str:
+    match = re.search(r"\d+", str(value or ""))
+    return match.group(0) if match else ""
+
+
+def extract_deal_id_from_link(value: Any) -> str:
+    match = re.search(r"/crm/deal/details/(\d+)/?", str(value or ""), flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def find_meeting_log_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
+    required_columns = ("status",)
+    optional_columns = ("deal_id", "deal_link")
+    column_map: dict[str, int] = {}
+    matched_rows: list[int] = []
+
+    for canonical_name in required_columns:
+        match = find_first_matching_alias(rows, MEETING_LOG_HEADER_ALIASES[canonical_name])
+        if match is None:
+            raise ConfigError(
+                "Could not find required meeting log columns. Expected at least the 'Статус' column."
+            )
+        row_index, column_index = match
+        column_map[canonical_name] = column_index
+        matched_rows.append(row_index)
+
+    for canonical_name in optional_columns:
+        match = find_first_matching_alias(rows, MEETING_LOG_HEADER_ALIASES[canonical_name])
+        if match is not None:
+            row_index, column_index = match
+            column_map[canonical_name] = column_index
+            matched_rows.append(row_index)
+
+    if "deal_id" not in column_map and "deal_link" not in column_map:
+        raise ConfigError(
+            "Could not find 'ID сделки' or 'Ссылка на сделку' columns in the meeting log sheet."
+        )
+
+    return max(matched_rows), column_map
 
 
 def sanitize_header_rows(rows: list[list[Any]]) -> list[list[Any]]:
@@ -1818,7 +1926,8 @@ def main() -> int:
         header_rows, column_map = ensure_metric_header_columns(header_rows, column_map)
 
         primary_day_counters, _ = build_primary_daily_counts(settings, window)
-        deal_day_metrics = build_daily_deal_metrics(settings, window)
+        successful_meeting_counts = build_successful_meeting_counts_by_deal(sheets_service, settings)
+        deal_day_metrics = build_daily_deal_metrics(settings, window, successful_meeting_counts)
         day_counters = overlay_deal_metrics(primary_day_counters, deal_day_metrics)
         result = build_report_rows(
             daily_counts=day_counters,
