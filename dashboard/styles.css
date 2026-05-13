@@ -382,7 +382,7 @@ select {
 
 .filters-band {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr)) minmax(220px, 1.35fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.85fr) minmax(150px, 0.85fr) minmax(220px, 1.25fr) auto;
   gap: 12px;
   align-items: end;
   padding: 16px;

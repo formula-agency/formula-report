@@ -33,17 +33,13 @@
       <div class="overview-strip__header">
         <p class="eyebrow">Внутренний отчет</p>
         <h1 id="overview-title">Отчет ОП</h1>
-        <p class="overview-strip__lead">Срез по UTM-комбинациям и сделочным метрикам: лиды, ипотека, встречи, брони и закрытые сделки.</p>
+        <p class="overview-strip__lead">Срез по источникам и сделочным метрикам: лиды, ипотека, встречи, брони и закрытые сделки.</p>
       </div>
 
       <div class="overview-summary-row" aria-label="Краткая сводка">
         <article class="overview-stat">
           <span>Источников</span>
           <strong id="hero-sources">0</strong>
-        </article>
-        <article class="overview-stat">
-          <span>Комбинаций UTM</span>
-          <strong id="hero-combinations">0</strong>
         </article>
         <article class="overview-stat">
           <span>Лидов</span>
@@ -75,18 +71,6 @@
           <select id="filter-source-label"></select>
         </label>
         <label class="field">
-          <span>utm source</span>
-          <select id="filter-utm-source"></select>
-        </label>
-        <label class="field">
-          <span>utm medium</span>
-          <select id="filter-utm-medium"></select>
-        </label>
-        <label class="field">
-          <span>utm campaign</span>
-          <select id="filter-utm-campaign"></select>
-        </label>
-        <label class="field">
           <span>От</span>
           <input id="filter-date-from" type="date">
         </label>
@@ -96,7 +80,7 @@
         </label>
         <label class="field field-search">
           <span>Поиск</span>
-          <input id="filter-search" type="search" placeholder="utm source, medium, campaign">
+          <input id="filter-search" type="search" placeholder="Источник">
         </label>
         <button id="reset-filters" class="ghost-button" type="button">Сбросить</button>
       </section>

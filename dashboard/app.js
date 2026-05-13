@@ -2,9 +2,6 @@ let data = null;
 
 const state = {
   sourceLabel: 'all',
-  utmSource: 'all',
-  utmMedium: 'all',
-  utmCampaign: 'all',
   dateFrom: '',
   dateTo: '',
   detailDate: 'latest',
@@ -17,16 +14,12 @@ const els = {
   tableLink: document.getElementById('table-link'),
   kcReportLink: document.getElementById('kc-report-link'),
   heroSources: document.getElementById('hero-sources'),
-  heroCombinations: document.getElementById('hero-combinations'),
   heroRecords: document.getElementById('hero-records'),
   heroApproved: document.getElementById('hero-approved'),
   heroMeetings: document.getElementById('hero-meetings'),
   heroReservations: document.getElementById('hero-reservations'),
   heroClosed: document.getElementById('hero-closed'),
   sourceLabel: document.getElementById('filter-source-label'),
-  utmSource: document.getElementById('filter-utm-source'),
-  utmMedium: document.getElementById('filter-utm-medium'),
-  utmCampaign: document.getElementById('filter-utm-campaign'),
   dateFrom: document.getElementById('filter-date-from'),
   dateTo: document.getElementById('filter-date-to'),
   search: document.getElementById('filter-search'),
@@ -133,19 +126,11 @@ function filteredRows() {
   const query = normalizeSearch(state.search);
   return data.baseRows.filter((row) => {
     if (state.sourceLabel !== 'all' && row.sourceLabel !== state.sourceLabel) return false;
-    if (state.utmSource !== 'all' && row.utmSource !== state.utmSource) return false;
-    if (state.utmMedium !== 'all' && row.utmMedium !== state.utmMedium) return false;
-    if (state.utmCampaign !== 'all' && row.utmCampaign !== state.utmCampaign) return false;
     if (state.dateFrom && row.uploadDate < state.dateFrom) return false;
     if (state.dateTo && row.uploadDate > state.dateTo) return false;
     if (!query) return true;
 
-    return [
-      row.sourceLabel,
-      row.utmSource,
-      row.utmMedium,
-      row.utmCampaign,
-    ].some((field) => normalizeSearch(field).includes(query));
+    return normalizeSearch(row.sourceLabel).includes(query);
   });
 }
 
@@ -232,18 +217,11 @@ function summarizeSourceTable(rows) {
   return [...groups.values()].sort((a, b) => `${a.month}_${a.source}`.localeCompare(`${b.month}_${b.source}`));
 }
 
-function uniqueCombinations(rows) {
-  return new Set(
-    rows.map((row) => `${row.utmSource}__${row.utmMedium}__${row.utmCampaign}`)
-  ).size;
-}
-
 function renderHero(rows) {
   const summary = summarizeRows(rows);
   const uniqueSources = new Set(rows.map((row) => row.sourceLabel).filter(Boolean)).size;
 
   setText(els.heroSources, formatNumber(uniqueSources));
-  setText(els.heroCombinations, formatNumber(uniqueCombinations(rows)));
   setText(els.heroRecords, formatNumber(summary.records));
   setText(els.heroApproved, formatNumber(summary.approvedMortgage));
   setText(els.heroMeetings, formatNumber(summary.meetingShow));
@@ -264,9 +242,6 @@ function renderKpis(rows) {
 function renderActiveState(rows) {
   const chips = [];
   if (state.sourceLabel !== 'all') chips.push(`Источник: ${state.sourceLabel}`);
-  if (state.utmSource !== 'all') chips.push(`utm source: ${state.utmSource}`);
-  if (state.utmMedium !== 'all') chips.push(`utm medium: ${state.utmMedium}`);
-  if (state.utmCampaign !== 'all') chips.push(`utm campaign: ${state.utmCampaign}`);
   if (state.dateFrom) chips.push(`От: ${formatDate(state.dateFrom)}`);
   if (state.dateTo) chips.push(`До: ${formatDate(state.dateTo)}`);
   if (normalizeSearch(state.search)) chips.push(`Поиск: ${state.search.trim()}`);
@@ -673,18 +648,6 @@ function bindControls() {
     state.sourceLabel = els.sourceLabel.value;
     render();
   });
-  els.utmSource.addEventListener('change', () => {
-    state.utmSource = els.utmSource.value;
-    render();
-  });
-  els.utmMedium.addEventListener('change', () => {
-    state.utmMedium = els.utmMedium.value;
-    render();
-  });
-  els.utmCampaign.addEventListener('change', () => {
-    state.utmCampaign = els.utmCampaign.value;
-    render();
-  });
   els.dateFrom.addEventListener('change', () => {
     state.dateFrom = els.dateFrom.value;
     render();
@@ -703,18 +666,12 @@ function bindControls() {
   });
   els.reset.addEventListener('click', () => {
     state.sourceLabel = 'all';
-    state.utmSource = 'all';
-    state.utmMedium = 'all';
-    state.utmCampaign = 'all';
     state.dateFrom = data.filters.minDate || '';
     state.dateTo = data.filters.maxDate || '';
     state.detailDate = 'latest';
     state.search = '';
 
     els.sourceLabel.value = 'all';
-    els.utmSource.value = 'all';
-    els.utmMedium.value = 'all';
-    els.utmCampaign.value = 'all';
     els.dateFrom.value = state.dateFrom;
     els.dateTo.value = state.dateTo;
     els.detailDate.value = state.detailDate;
@@ -736,9 +693,6 @@ function init() {
   }
 
   populateSelect(els.sourceLabel, data.filters.sourceLabels || [], 'Все источники');
-  populateSelect(els.utmSource, data.filters.utmSources || [], 'Все utm source');
-  populateSelect(els.utmMedium, data.filters.utmMediums || [], 'Все utm medium');
-  populateSelect(els.utmCampaign, data.filters.utmCampaigns || [], 'Все utm campaign');
 
   els.dateFrom.value = state.dateFrom;
   els.dateTo.value = state.dateTo;
