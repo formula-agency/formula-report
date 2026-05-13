@@ -89,6 +89,28 @@ function formatMonth(value) {
   return label.slice(0, 1).toUpperCase() + label.slice(1);
 }
 
+function clampDate(value, minValue, maxValue) {
+  if (!value) return '';
+  if (minValue && value < minValue) return minValue;
+  if (maxValue && value > maxValue) return maxValue;
+  return value;
+}
+
+function resolveDefaultDateRange(filters = {}) {
+  const minDate = filters.minDate || '';
+  const maxDate = filters.maxDate || '';
+  if (!maxDate) {
+    return { dateFrom: minDate, dateTo: maxDate };
+  }
+
+  const anchor = new Date(`${maxDate}T00:00:00`);
+  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1).toISOString().slice(0, 10);
+  return {
+    dateFrom: clampDate(monthStart, minDate, maxDate),
+    dateTo: maxDate,
+  };
+}
+
 function csvEscape(value) {
   const text = String(value ?? '');
   if (/[;"\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
@@ -665,9 +687,10 @@ function bindControls() {
     render();
   });
   els.reset.addEventListener('click', () => {
+    const defaultRange = resolveDefaultDateRange(data.filters);
     state.sourceLabel = 'all';
-    state.dateFrom = data.filters.minDate || '';
-    state.dateTo = data.filters.maxDate || '';
+    state.dateFrom = defaultRange.dateFrom;
+    state.dateTo = defaultRange.dateTo;
     state.detailDate = 'latest';
     state.search = '';
 
@@ -682,8 +705,9 @@ function bindControls() {
 }
 
 function init() {
-  state.dateFrom = data?.filters?.minDate || '';
-  state.dateTo = data?.filters?.maxDate || '';
+  const defaultRange = resolveDefaultDateRange(data?.filters);
+  state.dateFrom = defaultRange.dateFrom;
+  state.dateTo = defaultRange.dateTo;
 
   if (els.tableLink && data.report?.tableUrl) {
     els.tableLink.href = data.report.tableUrl;

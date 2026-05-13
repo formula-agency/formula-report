@@ -93,6 +93,7 @@ HEADER_ALIASES = {
 }
 MEETING_LOG_HEADER_ALIASES = {
     "status": {"статус", "status", "результат", "result"},
+    "meeting_start": {"начало встречи", "start", "meeting start"},
     "deal_id": {"id сделки", "deal id", "id deal"},
     "deal_link": {"ссылка на сделку", "deal link", "link"},
 }
@@ -232,6 +233,12 @@ class ReportBuildResult:
 class SheetWriteTarget:
     sheet_id: int
     sheet_title: str
+
+
+@dataclass(frozen=True)
+class MeetingLogEntry:
+    meeting_date: date
+    deal_id: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -727,7 +734,6 @@ def resolve_deal_closed(record: dict[str, Any], settings: Settings) -> bool:
 def resolve_deal_record_metrics(
     record: dict[str, Any],
     settings: Settings,
-    meeting_count: int,
 ) -> UtmMetrics:
     approved = False
     reservation = False
@@ -743,7 +749,6 @@ def resolve_deal_record_metrics(
 
     metrics = UtmMetrics()
     metrics.approved_mortgage = int(approved)
-    metrics.meeting_show = max(meeting_count, 0)
     metrics.reservation = int(reservation)
     metrics.closed = int(closed)
     return metrics
@@ -795,6 +800,27 @@ def execute_bitrix_list_request(
     return payload
 
 
+def execute_bitrix_get_request(
+    session: requests.Session,
+    settings: Settings,
+    method_name: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    method_url = build_bitrix_method_url(settings.bitrix_webhook_url, method_name)
+    response = session.get(method_url, params=params, timeout=settings.bitrix_request_timeout)
+    response.raise_for_status()
+    payload = response.json()
+
+    if "error" in payload:
+        raise RuntimeError(f"Bitrix API error: {payload['error']} - {payload.get('error_description', '')}")
+
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected Bitrix API response: result is not an object.")
+
+    return result
+
+
 def iterate_dates(start_date: date, end_date: date) -> list[date]:
     days: list[date] = []
     current = start_date
@@ -840,7 +866,74 @@ def fetch_day_records_for_entity(
     return records
 
 
-def build_successful_meeting_counts_by_deal(service: Any, settings: Settings) -> dict[str, int]:
+def parse_sheet_datetime(value: Any, timezone_name: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    tz = ZoneInfo(timezone_name)
+    normalized = text.replace("T", " ").replace("/", "-")
+
+    for parser in (datetime.fromisoformat,):
+        try:
+            parsed = parser(normalized)
+            break
+        except ValueError:
+            parsed = None
+    else:
+        parsed = None
+
+    if parsed is None:
+        for pattern in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%d.%m.%Y %H:%M:%S",
+            "%d.%m.%Y %H:%M",
+            "%Y-%m-%d",
+            "%d.%m.%Y",
+        ):
+            try:
+                parsed = datetime.strptime(normalized, pattern)
+                break
+            except ValueError:
+                continue
+
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def normalize_phone(value: Any) -> str:
+    digits = "".join(char for char in str(value or "") if char.isdigit())
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    return digits
+
+
+def extract_entity_phone_numbers(record: dict[str, Any]) -> list[str]:
+    raw_values = record.get("PHONE") or []
+    phones: list[str] = []
+
+    if isinstance(raw_values, dict):
+        raw_values = [raw_values]
+    elif not isinstance(raw_values, list):
+        raw_values = [raw_values]
+
+    for item in raw_values:
+        if isinstance(item, dict):
+            value = item.get("VALUE")
+        else:
+            value = item
+        phone = normalize_phone(value)
+        if phone:
+            phones.append(phone)
+
+    return phones
+
+
+def build_successful_meeting_entries(service: Any, settings: Settings) -> list[MeetingLogEntry]:
     sheet_title = resolve_sheet_title(
         service,
         settings.google_meeting_log_sheet_id,
@@ -859,15 +952,21 @@ def build_successful_meeting_counts_by_deal(service: Any, settings: Settings) ->
     )
 
     if not values:
-        return {}
+        return []
 
     header_row_index, column_map = find_meeting_log_columns(values)
-    successful_counts: dict[str, int] = defaultdict(int)
+    entries: list[MeetingLogEntry] = []
 
     for row in values[header_row_index + 1 :]:
         status_index = column_map["status"]
         status_value = row[status_index] if status_index < len(row) else ""
         if normalize_text(status_value) not in SUCCESSFUL_MEETING_STATUSES:
+            continue
+
+        meeting_start_index = column_map["meeting_start"]
+        meeting_start_value = row[meeting_start_index] if meeting_start_index < len(row) else ""
+        meeting_datetime = parse_sheet_datetime(meeting_start_value, settings.report_timezone)
+        if meeting_datetime is None:
             continue
 
         deal_id = ""
@@ -883,9 +982,9 @@ def build_successful_meeting_counts_by_deal(service: Any, settings: Settings) ->
         if not deal_id:
             continue
 
-        successful_counts[deal_id] += 1
+        entries.append(MeetingLogEntry(meeting_date=meeting_datetime.date(), deal_id=deal_id))
 
-    return dict(successful_counts)
+    return entries
 
 
 def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[date, dict[UtmKey, UtmMetrics]], int]:
@@ -938,7 +1037,6 @@ def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tupl
 def build_daily_deal_metrics(
     settings: Settings,
     window: ReportWindow,
-    successful_meeting_counts: dict[str, int],
 ) -> dict[date, dict[UtmKey, UtmMetrics]]:
     session = build_bitrix_session()
     day_counters: dict[date, dict[UtmKey, UtmMetrics]] = {}
@@ -986,12 +1084,9 @@ def build_daily_deal_metrics(
             if resolve_allowed_source_label(key) is None:
                 continue
 
-            deal_id = str(record.get("ID") or "").strip()
-            meeting_count = successful_meeting_counts.get(deal_id, 0)
-            metrics = resolve_deal_record_metrics(record, settings, meeting_count)
+            metrics = resolve_deal_record_metrics(record, settings)
             target = counter[key]
             target.approved_mortgage += metrics.approved_mortgage
-            target.meeting_show += metrics.meeting_show
             target.reservation += metrics.reservation
             target.closed += metrics.closed
 
@@ -999,6 +1094,145 @@ def build_daily_deal_metrics(
             day_counters[current_date] = counter
 
     return day_counters
+
+
+def resolve_allowed_source_for_lead_or_deal(
+    session: requests.Session,
+    settings: Settings,
+    deal_id: str,
+    deal_cache: dict[str, dict[str, Any]],
+    lead_cache: dict[str, dict[str, Any]],
+    contact_cache: dict[str, dict[str, Any]],
+    phone_source_cache: dict[str, str | None],
+) -> str | None:
+    if not deal_id:
+        return None
+
+    deal = deal_cache.get(deal_id)
+    if deal is None:
+        deal = execute_bitrix_get_request(session, settings, "crm.deal.get", {"id": deal_id})
+        deal_cache[deal_id] = deal
+
+    deal_label = resolve_allowed_source_label(resolve_record_utm_key(deal, get_deal_utm_field_candidates(settings)))
+    if deal_label:
+        return deal_label
+
+    lead_id = str(deal.get("LEAD_ID") or "").strip()
+    if lead_id:
+        lead = lead_cache.get(lead_id)
+        if lead is None:
+            lead = execute_bitrix_get_request(session, settings, "crm.lead.get", {"id": lead_id})
+            lead_cache[lead_id] = lead
+
+        lead_label = resolve_allowed_source_label(resolve_record_utm_key(lead, get_utm_field_candidates(settings)))
+        if lead_label:
+            return lead_label
+
+        for phone in extract_entity_phone_numbers(lead):
+            if phone not in phone_source_cache:
+                phone_source_cache[phone] = find_allowed_source_by_phone(session, settings, phone)
+            if phone_source_cache[phone]:
+                return phone_source_cache[phone]
+
+    contact_id = str(deal.get("CONTACT_ID") or "").strip()
+    if contact_id:
+        contact = contact_cache.get(contact_id)
+        if contact is None:
+            contact = execute_bitrix_get_request(session, settings, "crm.contact.get", {"id": contact_id})
+            contact_cache[contact_id] = contact
+        for phone in extract_entity_phone_numbers(contact):
+            if phone not in phone_source_cache:
+                phone_source_cache[phone] = find_allowed_source_by_phone(session, settings, phone)
+            if phone_source_cache[phone]:
+                return phone_source_cache[phone]
+
+    return None
+
+
+def phone_search_variants(phone: str) -> list[str]:
+    variants = [phone]
+    if len(phone) == 11 and phone.startswith("7"):
+        variants.append("8" + phone[1:])
+        variants.append("+" + phone)
+        variants.append("+7 (" + phone[1:4] + ") " + phone[4:7] + "-" + phone[7:9] + "-" + phone[9:11])
+    elif len(phone) == 10:
+        variants.append("7" + phone)
+        variants.append("8" + phone)
+    return list(dict.fromkeys(filter(None, variants)))
+
+
+def find_allowed_source_by_phone(
+    session: requests.Session,
+    settings: Settings,
+    phone: str,
+) -> str | None:
+    lead_fields = get_utm_field_candidates(settings)
+    select_fields = ["ID", "PHONE"] + lead_fields["source"] + lead_fields["medium"] + lead_fields["campaign"]
+
+    for variant in phone_search_variants(phone):
+        try:
+            records = execute_bitrix_list_request(
+                session=session,
+                settings=settings,
+                entity_type="lead",
+                filters={"PHONE": variant},
+                select_fields=select_fields,
+                start=0,
+            ).get("result", [])
+        except RuntimeError:
+            continue
+
+        for record in records:
+            label = resolve_allowed_source_label(resolve_record_utm_key(record, lead_fields))
+            if label:
+                return label
+
+    return None
+
+
+def build_daily_meeting_metrics(
+    service: Any,
+    settings: Settings,
+    window: ReportWindow,
+) -> dict[date, dict[UtmKey, UtmMetrics]]:
+    session = build_bitrix_session()
+    meeting_entries = build_successful_meeting_entries(service, settings)
+    daily_counts: dict[date, dict[UtmKey, UtmMetrics]] = defaultdict(lambda: defaultdict(UtmMetrics))
+    deal_cache: dict[str, dict[str, Any]] = {}
+    lead_cache: dict[str, dict[str, Any]] = {}
+    contact_cache: dict[str, dict[str, Any]] = {}
+    phone_source_cache: dict[str, str | None] = {}
+
+    source_key_map = {label: key for key, label in ALLOWED_UTM_RULES.items()}
+
+    for entry in meeting_entries:
+        if entry.meeting_date < window.start.date() or entry.meeting_date > window.end.date():
+            continue
+
+        source_label = resolve_allowed_source_for_lead_or_deal(
+            session=session,
+            settings=settings,
+            deal_id=entry.deal_id,
+            deal_cache=deal_cache,
+            lead_cache=lead_cache,
+            contact_cache=contact_cache,
+            phone_source_cache=phone_source_cache,
+        )
+        if not source_label:
+            continue
+
+        source_key = source_key_map.get(source_label)
+        if source_key is None:
+            continue
+
+        utm_key = UtmKey(
+            utm_source=source_key[0],
+            utm_medium=source_key[1],
+            utm_campaign=source_key[2],
+        )
+        daily_counts[entry.meeting_date][utm_key].meeting_show += 1
+
+    return {current_date: dict(counter) for current_date, counter in daily_counts.items()}
 
 
 def overlay_deal_metrics(
@@ -1030,6 +1264,33 @@ def overlay_deal_metrics(
             target.meeting_show += metrics.meeting_show
             target.reservation += metrics.reservation
             target.closed += metrics.closed
+
+    return merged_counts
+
+
+def overlay_meeting_metrics(
+    base_counts: dict[date, dict[UtmKey, UtmMetrics]],
+    meeting_counts: dict[date, dict[UtmKey, UtmMetrics]],
+) -> dict[date, dict[UtmKey, UtmMetrics]]:
+    merged_counts: dict[date, dict[UtmKey, UtmMetrics]] = {
+        current_date: {
+            key: UtmMetrics(
+                records=metrics.records,
+                approved_mortgage=metrics.approved_mortgage,
+                meeting_show=metrics.meeting_show,
+                reservation=metrics.reservation,
+                closed=metrics.closed,
+            )
+            for key, metrics in day_counter.items()
+        }
+        for current_date, day_counter in base_counts.items()
+    }
+
+    for current_date, day_counter in meeting_counts.items():
+        target_counter = merged_counts.setdefault(current_date, {})
+        for key, metrics in day_counter.items():
+            target = target_counter.setdefault(key, UtmMetrics())
+            target.meeting_show += metrics.meeting_show
 
     return merged_counts
 
@@ -1128,7 +1389,7 @@ def extract_deal_id_from_link(value: Any) -> str:
 
 
 def find_meeting_log_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
-    required_columns = ("status",)
+    required_columns = ("status", "meeting_start")
     optional_columns = ("deal_id", "deal_link")
     column_map: dict[str, int] = {}
     matched_rows: list[int] = []
@@ -1137,7 +1398,7 @@ def find_meeting_log_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]
         match = find_first_matching_alias(rows, MEETING_LOG_HEADER_ALIASES[canonical_name])
         if match is None:
             raise ConfigError(
-                "Could not find required meeting log columns. Expected at least the 'Статус' column."
+                "Could not find required meeting log columns. Expected 'Результат/Статус' and 'Начало встречи'."
             )
         row_index, column_index = match
         column_map[canonical_name] = column_index
@@ -2031,9 +2292,10 @@ def main() -> int:
         header_rows, column_map = ensure_metric_header_columns(header_rows, column_map)
 
         primary_day_counters, _ = build_primary_daily_counts(settings, window)
-        successful_meeting_counts = build_successful_meeting_counts_by_deal(sheets_service, settings)
-        deal_day_metrics = build_daily_deal_metrics(settings, window, successful_meeting_counts)
+        deal_day_metrics = build_daily_deal_metrics(settings, window)
+        meeting_day_metrics = build_daily_meeting_metrics(sheets_service, settings, window)
         day_counters = overlay_deal_metrics(primary_day_counters, deal_day_metrics)
+        day_counters = overlay_meeting_metrics(day_counters, meeting_day_metrics)
         result = build_report_rows(
             daily_counts=day_counters,
             width=context.allowed_range.width,
