@@ -27,6 +27,7 @@ ALLOWED_UTM_RULES = {
     ("avito", "cpc", "frml"): "Авито",
     ("recommendation", "call", "frml"): "Рекомендация",
 }
+KC_DASHBOARD_URL = "https://formula-agency.github.io/otchety/"
 DEFAULT_MEETING_LOG_SHEET_ID = "1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo"
 DEFAULT_MEETING_LOG_SHEET_NAME = "Meetings"
 LEAD_FALLBACK_UTM_FIELDS = {
@@ -1443,6 +1444,110 @@ def build_source_summary_rows(
     return rows
 
 
+def build_dashboard_payload(
+    daily_counts: dict[date, dict[UtmKey, UtmMetrics]],
+    settings: Settings,
+    window: ReportWindow,
+) -> dict[str, Any]:
+    dashboard_rows: list[dict[str, Any]] = []
+    source_labels: set[str] = set()
+    utm_sources: set[str] = set()
+    utm_mediums: set[str] = set()
+    utm_campaigns: set[str] = set()
+    utm_combinations: set[tuple[str, str, str]] = set()
+
+    totals = {
+        "records": 0,
+        "approvedMortgage": 0,
+        "meetingShow": 0,
+        "reservation": 0,
+        "closedDeals": 0,
+    }
+
+    for current_date in sorted(daily_counts):
+        current_date_iso = current_date.isoformat()
+        current_month = current_date.strftime("%Y-%m")
+        for key in sorted(
+            daily_counts[current_date],
+            key=lambda item: (item.utm_source, item.utm_medium, item.utm_campaign),
+        ):
+            metrics = daily_counts[current_date][key]
+            source_label = resolve_allowed_source_label(key) or settings.report_unknown_source
+
+            source_labels.add(source_label)
+            utm_sources.add(key.utm_source)
+            utm_mediums.add(key.utm_medium)
+            utm_campaigns.add(key.utm_campaign)
+            utm_combinations.add((key.utm_source, key.utm_medium, key.utm_campaign))
+
+            totals["records"] += metrics.records
+            totals["approvedMortgage"] += metrics.approved_mortgage
+            totals["meetingShow"] += metrics.meeting_show
+            totals["reservation"] += metrics.reservation
+            totals["closedDeals"] += metrics.closed
+
+            dashboard_rows.append(
+                {
+                    "month": current_month,
+                    "uploadDate": current_date_iso,
+                    "sourceLabel": source_label,
+                    "utmSource": key.utm_source,
+                    "utmMedium": key.utm_medium,
+                    "utmCampaign": key.utm_campaign,
+                    "records": metrics.records,
+                    "approvedMortgage": metrics.approved_mortgage,
+                    "meetingShow": metrics.meeting_show,
+                    "reservation": metrics.reservation,
+                    "closedDeals": metrics.closed,
+                }
+            )
+
+    generated_at = datetime.now(ZoneInfo(settings.report_timezone)).isoformat()
+    table_url = f"https://docs.google.com/spreadsheets/d/{settings.google_sheet_id}/edit?gid=0#gid=0"
+
+    return {
+        "report": {
+            "name": "Отчет ОП",
+            "from": window.start.date().isoformat(),
+            "to": window.end.date().isoformat(),
+            "timezone": settings.report_timezone,
+            "tableUrl": table_url,
+            "kcDashboardUrl": KC_DASHBOARD_URL,
+            "opDashboardUrl": "./",
+        },
+        "generatedAt": generated_at,
+        "filters": {
+            "sourceLabels": sorted(source_labels),
+            "utmSources": sorted(utm_sources),
+            "utmMediums": sorted(utm_mediums),
+            "utmCampaigns": sorted(utm_campaigns),
+            "minDate": dashboard_rows[0]["uploadDate"] if dashboard_rows else "",
+            "maxDate": dashboard_rows[-1]["uploadDate"] if dashboard_rows else "",
+        },
+        "totals": totals,
+        "overview": {
+            "sourceCount": len(source_labels),
+            "utmCombinationCount": len(utm_combinations),
+        },
+        "baseRows": dashboard_rows,
+    }
+
+
+def write_dashboard_files(payload: dict[str, Any]) -> None:
+    dashboard_data_dir = Path("dashboard") / "data"
+    dashboard_data_dir.mkdir(parents=True, exist_ok=True)
+
+    json_path = dashboard_data_dir / "report-data.json"
+    js_path = dashboard_data_dir / "report-data.js"
+
+    json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    json_path.write_text(f"{json_text}\n", encoding="utf-8")
+    js_path.write_text(
+        f"window.REPORT_DASHBOARD_DATA = {json_text};\n",
+        encoding="utf-8",
+    )
+
+
 def clear_report_values(service: Any, context: SheetContext, header_rows: int) -> None:
     clear_start_row = context.allowed_range.start_row + header_rows
     if clear_start_row > context.allowed_range.end_row:
@@ -1940,6 +2045,12 @@ def main() -> int:
             daily_counts=day_counters,
             unknown_source=settings.report_unknown_source,
         )
+        dashboard_payload = build_dashboard_payload(
+            daily_counts=day_counters,
+            settings=settings,
+            window=window,
+        )
+        write_dashboard_files(dashboard_payload)
 
         if not args.dry_run:
             clear_report_values(sheets_service, context, header_row_index + 1)

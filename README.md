@@ -18,8 +18,10 @@
 - делает вложенную структуру: итог месяца -> итог дня -> детальные строки
 - создает row groups в Google Sheets, чтобы месяцы и дни можно было сворачивать
 - создает отдельный лист `Итог по источникам`
+- дополнительно собирает статический дашборд в папку `dashboard`
 - обновляет только значения в диапазоне `GOOGLE_ALLOWED_RANGE`
 - запускается локально или по расписанию через GitHub Actions
+- может публиковаться в GitHub Pages без прямого доступа браузера к Bitrix и Google API
 
 ## Локальная настройка
 
@@ -91,6 +93,13 @@ python scripts/sync_formula_report.py --env-file bitrix.env --dry-run
 python scripts/sync_formula_report.py --env-file bitrix.env
 ```
 
+После каждого запуска дополнительно обновляются файлы:
+
+- `dashboard/data/report-data.json`
+- `dashboard/data/report-data.js`
+
+Именно они используются GitHub Pages-дэшбордом.
+
 ## Логика заполнения
 
 - скрипт берет данные из Bitrix начиная с `REPORT_START_DATE`
@@ -121,9 +130,27 @@ Workflow лежит в `.github/workflows/update-report.yml`.
 По умолчанию он запускается:
 
 - вручную через `workflow_dispatch`
+- при пуше в `main`, если изменились `scripts/`, `dashboard/`, `requirements.txt` или сам workflow
 - автоматически каждый день в `01:00 UTC`, это `06:00` по `Asia/Yekaterinburg`
 
 Если нужно другое время, измени `cron`.
+
+В одном прогоне workflow:
+
+- пересчитывает отчет и обновляет Google Sheets
+- пересобирает `dashboard/data`
+- публикует папку `dashboard` в GitHub Pages
+
+## GitHub Pages
+
+Дашборд лежит в папке `dashboard` и использует только уже подготовленные статические данные.
+
+Для публикации нужно один раз включить:
+
+- `Settings -> Pages -> Build and deployment -> Source = GitHub Actions`
+- `Settings -> Actions -> General -> Allow all actions and reusable workflows`
+
+После этого workflow сам будет деплоить страницу.
 
 ## Какие секреты создать в GitHub
 

@@ -2,8 +2,25 @@ name: Update Formula Report
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/update-report.yml"
+      - "dashboard/**"
+      - "requirements.txt"
+      - "scripts/sync_formula_report.py"
   schedule:
     - cron: "0 1 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: formula-report-pages
+  cancel-in-progress: true
 
 jobs:
   sync-report:
@@ -42,3 +59,20 @@ jobs:
           REPORT_REQUIRE_ALL_UTM: ${{ secrets.REPORT_REQUIRE_ALL_UTM }}
           REPORT_UNKNOWN_SOURCE: ${{ secrets.REPORT_UNKNOWN_SOURCE }}
         run: python scripts/sync_formula_report.py
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard
+
+  deploy-dashboard:
+    needs: sync-report
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

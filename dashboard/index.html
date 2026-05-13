@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Отчет ОП</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script defer src="./data/report-data.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Наверх">
+      <span class="brand__main">Отчет ОП</span>
+    </a>
+    <nav class="site-nav" aria-label="Разделы">
+      <a href="#overview">Обзор</a>
+      <a href="#sources">Источники</a>
+      <a href="#details">Детализация</a>
+    </nav>
+    <div class="header-actions">
+      <div class="report-switch" aria-label="Выбор отчета">
+        <a class="report-switch__item" id="kc-report-link" href="https://formula-agency.github.io/otchety/">Отчет КЦ</a>
+        <a class="report-switch__item is-active" href="./" aria-current="page">Отчет ОП</a>
+      </div>
+      <a class="button button--ghost" id="table-link" href="https://docs.google.com/spreadsheets/d/1HJkKDM0k7ZtytAURms7CYX5bjOyLgTsfQW0UU34vceg/edit?gid=0#gid=0" target="_blank" rel="noreferrer">К таблице</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="overview-strip section-anchor" id="overview" aria-labelledby="overview-title">
+      <div class="overview-strip__grid" aria-hidden="true"></div>
+      <div class="overview-strip__header">
+        <p class="eyebrow">Внутренний отчет</p>
+        <h1 id="overview-title">Отчет ОП</h1>
+        <p class="overview-strip__lead">Срез по UTM-комбинациям и сделочным метрикам: лиды, ипотека, встречи, брони и закрытые сделки.</p>
+      </div>
+
+      <div class="overview-summary-row" aria-label="Краткая сводка">
+        <article class="overview-stat">
+          <span>Источников</span>
+          <strong id="hero-sources">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Комбинаций UTM</span>
+          <strong id="hero-combinations">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Лидов</span>
+          <strong id="hero-records">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Ипотека</span>
+          <strong id="hero-approved">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Встреча/показ</span>
+          <strong id="hero-meetings">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Бронь</span>
+          <strong id="hero-reservations">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Сделки</span>
+          <strong id="hero-closed">0</strong>
+        </article>
+      </div>
+    </section>
+
+    <div class="page-shell">
+      <section class="filters-band" aria-label="Фильтры">
+        <label class="field">
+          <span>Источник</span>
+          <select id="filter-source-label"></select>
+        </label>
+        <label class="field">
+          <span>utm source</span>
+          <select id="filter-utm-source"></select>
+        </label>
+        <label class="field">
+          <span>utm medium</span>
+          <select id="filter-utm-medium"></select>
+        </label>
+        <label class="field">
+          <span>utm campaign</span>
+          <select id="filter-utm-campaign"></select>
+        </label>
+        <label class="field">
+          <span>От</span>
+          <input id="filter-date-from" type="date">
+        </label>
+        <label class="field">
+          <span>До</span>
+          <input id="filter-date-to" type="date">
+        </label>
+        <label class="field field-search">
+          <span>Поиск</span>
+          <input id="filter-search" type="search" placeholder="utm source, medium, campaign">
+        </label>
+        <button id="reset-filters" class="ghost-button" type="button">Сбросить</button>
+      </section>
+
+      <section class="active-state" aria-live="polite">
+        <div id="active-filters" class="chips"></div>
+        <div id="selection-summary" class="selection-summary"></div>
+      </section>
+
+      <section class="kpi-grid" aria-label="Ключевые показатели">
+        <article class="kpi-card accent-cyan">
+          <span class="kpi-label">Лиды</span>
+          <strong id="kpi-records" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card accent-emerald">
+          <span class="kpi-label">Одобрена ипотека</span>
+          <strong id="kpi-approved" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card accent-amber">
+          <span class="kpi-label">Встреча/показ</span>
+          <strong id="kpi-meetings" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card accent-coral">
+          <span class="kpi-label">Бронь</span>
+          <strong id="kpi-reservations" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card accent-lime">
+          <span class="kpi-label">Закрыто сделок</span>
+          <strong id="kpi-closed" class="kpi-value">0</strong>
+        </article>
+        <article class="kpi-card accent-violet">
+          <span class="kpi-label">CR в сделку</span>
+          <strong id="kpi-cr" class="kpi-value">0%</strong>
+        </article>
+      </section>
+
+      <section class="chart-grid chart-grid--primary">
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <h2>Динамика по дням</h2>
+            <p>Лиды, бронь и закрытые сделки</p>
+          </div>
+          <div class="chart-frame chart-frame--daily">
+            <canvas id="daily-chart" height="120"></canvas>
+          </div>
+        </article>
+      </section>
+
+      <section class="table-grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2 id="sources">Итог по источникам</h2>
+            <p>Помесячный итог по разрешенным источникам</p>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Период</th>
+                  <th>Источник</th>
+                  <th>Лиды</th>
+                  <th>Одобрена ипотека</th>
+                  <th>Встреча/показ</th>
+                  <th>Бронь</th>
+                  <th>Сделки</th>
+                </tr>
+              </thead>
+              <tbody id="source-summary-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head panel-head-inline">
+            <div>
+              <h2 id="details">Детализация</h2>
+              <p id="detail-caption">Срез по дате и UTM-комбинациям</p>
+            </div>
+            <div class="detail-actions">
+              <label class="inline-control">
+                <span>Дата</span>
+                <select id="detail-date-select"></select>
+              </label>
+              <button id="export-csv" class="ghost-button" type="button">Экспорт CSV</button>
+            </div>
+          </div>
+          <div class="table-wrap table-wrap--details">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>Источник</th>
+                  <th>utm source</th>
+                  <th>utm medium</th>
+                  <th>utm campaign</th>
+                  <th>Лиды</th>
+                  <th>Ипотека</th>
+                  <th>Встреча/показ</th>
+                  <th>Бронь</th>
+                  <th>Сделки</th>
+                  <th>CR</th>
+                </tr>
+              </thead>
+              <tbody id="detail-body"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="chart-grid chart-grid--secondary">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Источники</h2>
+            <p>Доля лидов по источникам</p>
+          </div>
+          <div class="chart-frame chart-frame--source">
+            <canvas id="source-chart" height="240"></canvas>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Воронка</h2>
+            <p>Общая структура метрик</p>
+          </div>
+          <div class="chart-frame chart-frame--funnel">
+            <canvas id="funnel-chart" height="240"></canvas>
+          </div>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <h2>Источники по результату</h2>
+            <p>Сравнение ипотек, встреч, броней и сделок</p>
+          </div>
+          <div class="chart-frame chart-frame--performance">
+            <canvas id="performance-chart" height="140"></canvas>
+          </div>
+        </article>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

@@ -5,3 +5,5 @@ bitrix.env
 Credentials/*.json
 .venv/
 __pycache__/
+dashboard/data/report-data.js
+dashboard/data/report-data.json
