@@ -1,12 +1,12 @@
-const data = window.REPORT_DASHBOARD_DATA;
+let data = null;
 
 const state = {
   sourceLabel: 'all',
   utmSource: 'all',
   utmMedium: 'all',
   utmCampaign: 'all',
-  dateFrom: data?.filters?.minDate || '',
-  dateTo: data?.filters?.maxDate || '',
+  dateFrom: '',
+  dateTo: '',
   detailDate: 'latest',
   search: '',
 };
@@ -725,10 +725,8 @@ function bindControls() {
 }
 
 function init() {
-  if (!data) {
-    document.body.innerHTML = '<main class="page-shell"><section class="panel"><div class="panel-head"><h2>Нет данных</h2></div></section></main>';
-    return;
-  }
+  state.dateFrom = data?.filters?.minDate || '';
+  state.dateTo = data?.filters?.maxDate || '';
 
   if (els.tableLink && data.report?.tableUrl) {
     els.tableLink.href = data.report.tableUrl;
@@ -754,4 +752,25 @@ function init() {
   render();
 }
 
-init();
+async function loadData() {
+  try {
+    const response = await fetch('./data/report-data.json', { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    return window.REPORT_DASHBOARD_DATA || null;
+  }
+}
+
+async function bootstrap() {
+  data = await loadData();
+  if (!data) {
+    document.body.innerHTML = '<main class="page-shell"><section class="panel"><div class="panel-head"><h2>Нет данных</h2><p>Файл дашборда пока не сгенерирован.</p></div></section></main>';
+    return;
+  }
+  init();
+}
+
+bootstrap();
