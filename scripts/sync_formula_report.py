@@ -241,6 +241,14 @@ class MeetingLogEntry:
     deal_id: str
 
 
+@dataclass(frozen=True)
+class AttributionCaches:
+    deal_cache: dict[str, dict[str, Any]]
+    lead_cache: dict[str, dict[str, Any]]
+    contact_cache: dict[str, dict[str, Any]]
+    phone_utm_cache: dict[str, UtmKey | None]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build and sync a Bitrix24 UTM report into Google Sheets with month/day grouping."
@@ -690,6 +698,10 @@ def resolve_record_utm_key(record: dict[str, Any], field_candidates: dict[str, l
     )
 
 
+def resolve_allowed_utm_key(key: UtmKey) -> UtmKey | None:
+    return key if resolve_allowed_source_label(key) is not None else None
+
+
 def resolve_boolean_field(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -905,6 +917,25 @@ def parse_sheet_datetime(value: Any, timezone_name: str) -> datetime | None:
     return parsed.astimezone(tz)
 
 
+def parse_bitrix_datetime(value: Any, timezone_name: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    tz = ZoneInfo(timezone_name)
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        parsed = parse_sheet_datetime(text, timezone_name)
+
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
 def normalize_phone(value: Any) -> str:
     digits = "".join(char for char in str(value or "") if char.isdigit())
     if len(digits) == 11 and digits.startswith("8"):
@@ -1041,12 +1072,20 @@ def build_daily_deal_metrics(
     session = build_bitrix_session()
     day_counters: dict[date, dict[UtmKey, UtmMetrics]] = {}
     field_candidates = get_deal_utm_field_candidates(settings)
+    caches = AttributionCaches(
+        deal_cache={},
+        lead_cache={},
+        contact_cache={},
+        phone_utm_cache={},
+    )
 
     select_fields = [
         "ID",
         "DATE_CREATE",
         "STAGE_ID",
         "STAGE_SEMANTIC_ID",
+        "LEAD_ID",
+        "CONTACT_ID",
     ]
     for field_name in (
         field_candidates["source"]
@@ -1078,10 +1117,15 @@ def build_daily_deal_metrics(
         counter: dict[UtmKey, UtmMetrics] = defaultdict(UtmMetrics)
 
         for record in records:
-            key = resolve_record_utm_key(record, field_candidates)
-            if not (key.utm_source and key.utm_medium and key.utm_campaign):
-                continue
-            if resolve_allowed_source_label(key) is None:
+            deal_id = str(record.get("ID") or "").strip()
+            key = resolve_allowed_utm_key_for_deal(
+                session=session,
+                settings=settings,
+                deal_id=deal_id,
+                caches=caches,
+                deal_record=record,
+            )
+            if key is None:
                 continue
 
             metrics = resolve_deal_record_metrics(record, settings)
@@ -1096,55 +1140,66 @@ def build_daily_deal_metrics(
     return day_counters
 
 
-def resolve_allowed_source_for_lead_or_deal(
+def resolve_allowed_utm_key_for_deal(
     session: requests.Session,
     settings: Settings,
     deal_id: str,
-    deal_cache: dict[str, dict[str, Any]],
-    lead_cache: dict[str, dict[str, Any]],
-    contact_cache: dict[str, dict[str, Any]],
-    phone_source_cache: dict[str, str | None],
-) -> str | None:
-    if not deal_id:
+    caches: AttributionCaches,
+    deal_record: dict[str, Any] | None = None,
+) -> UtmKey | None:
+    if not deal_id and not deal_record:
         return None
 
-    deal = deal_cache.get(deal_id)
-    if deal is None:
-        deal = execute_bitrix_get_request(session, settings, "crm.deal.get", {"id": deal_id})
-        deal_cache[deal_id] = deal
+    deal = deal_record
+    if deal is None and deal_id:
+        deal = caches.deal_cache.get(deal_id)
+        if deal is None:
+            deal = execute_bitrix_get_request(session, settings, "crm.deal.get", {"id": deal_id})
+            caches.deal_cache[deal_id] = deal
 
-    deal_label = resolve_allowed_source_label(resolve_record_utm_key(deal, get_deal_utm_field_candidates(settings)))
-    if deal_label:
-        return deal_label
+    if deal is None:
+        return None
+
+    resolved_deal_id = deal_id or str(deal.get("ID") or "").strip()
+    if resolved_deal_id and resolved_deal_id not in caches.deal_cache:
+        caches.deal_cache[resolved_deal_id] = deal
+
+    deal_key = resolve_allowed_utm_key(
+        resolve_record_utm_key(deal, get_deal_utm_field_candidates(settings))
+    )
+    if deal_key:
+        return deal_key
 
     lead_id = str(deal.get("LEAD_ID") or "").strip()
     if lead_id:
-        lead = lead_cache.get(lead_id)
+        lead = caches.lead_cache.get(lead_id)
         if lead is None:
             lead = execute_bitrix_get_request(session, settings, "crm.lead.get", {"id": lead_id})
-            lead_cache[lead_id] = lead
+            caches.lead_cache[lead_id] = lead
 
-        lead_label = resolve_allowed_source_label(resolve_record_utm_key(lead, get_utm_field_candidates(settings)))
-        if lead_label:
-            return lead_label
+        lead_key = resolve_allowed_utm_key(
+            resolve_record_utm_key(lead, get_utm_field_candidates(settings))
+        )
+        if lead_key:
+            return lead_key
 
         for phone in extract_entity_phone_numbers(lead):
-            if phone not in phone_source_cache:
-                phone_source_cache[phone] = find_allowed_source_by_phone(session, settings, phone)
-            if phone_source_cache[phone]:
-                return phone_source_cache[phone]
+            if phone not in caches.phone_utm_cache:
+                caches.phone_utm_cache[phone] = find_first_allowed_utm_key_by_phone(session, settings, phone)
+            if caches.phone_utm_cache[phone]:
+                return caches.phone_utm_cache[phone]
 
     contact_id = str(deal.get("CONTACT_ID") or "").strip()
     if contact_id:
-        contact = contact_cache.get(contact_id)
+        contact = caches.contact_cache.get(contact_id)
         if contact is None:
             contact = execute_bitrix_get_request(session, settings, "crm.contact.get", {"id": contact_id})
-            contact_cache[contact_id] = contact
+            caches.contact_cache[contact_id] = contact
         for phone in extract_entity_phone_numbers(contact):
-            if phone not in phone_source_cache:
-                phone_source_cache[phone] = find_allowed_source_by_phone(session, settings, phone)
-            if phone_source_cache[phone]:
-                return phone_source_cache[phone]
+            if phone not in caches.phone_utm_cache:
+                caches.phone_utm_cache[phone] = find_first_allowed_utm_key_by_phone(session, settings, phone)
+            if caches.phone_utm_cache[phone]:
+                return caches.phone_utm_cache[phone]
 
     return None
 
@@ -1161,31 +1216,52 @@ def phone_search_variants(phone: str) -> list[str]:
     return list(dict.fromkeys(filter(None, variants)))
 
 
-def find_allowed_source_by_phone(
+def find_first_allowed_utm_key_by_phone(
     session: requests.Session,
     settings: Settings,
     phone: str,
-) -> str | None:
+) -> UtmKey | None:
     lead_fields = get_utm_field_candidates(settings)
-    select_fields = ["ID", "PHONE"] + lead_fields["source"] + lead_fields["medium"] + lead_fields["campaign"]
+    select_fields = ["ID", "DATE_CREATE", "PHONE"] + lead_fields["source"] + lead_fields["medium"] + lead_fields["campaign"]
+    collected_records: dict[str, dict[str, Any]] = {}
 
     for variant in phone_search_variants(phone):
-        try:
-            records = execute_bitrix_list_request(
-                session=session,
-                settings=settings,
-                entity_type="lead",
-                filters={"PHONE": variant},
-                select_fields=select_fields,
-                start=0,
-            ).get("result", [])
-        except RuntimeError:
-            continue
+        start = 0
+        while True:
+            try:
+                payload = execute_bitrix_list_request(
+                    session=session,
+                    settings=settings,
+                    entity_type="lead",
+                    filters={"PHONE": variant},
+                    select_fields=select_fields,
+                    start=start,
+                )
+            except RuntimeError:
+                break
 
-        for record in records:
-            label = resolve_allowed_source_label(resolve_record_utm_key(record, lead_fields))
-            if label:
-                return label
+            for record in payload.get("result", []):
+                record_id = str(record.get("ID") or "").strip()
+                if record_id:
+                    collected_records[record_id] = record
+
+            raw_next = payload.get("next")
+            if raw_next is None:
+                break
+            start = int(raw_next)
+
+    sorted_records = sorted(
+        collected_records.values(),
+        key=lambda record: (
+            parse_bitrix_datetime(record.get("DATE_CREATE"), settings.report_timezone) or datetime.max.replace(tzinfo=ZoneInfo(settings.report_timezone)),
+            int(str(record.get("ID") or "0")),
+        ),
+    )
+
+    for record in sorted_records:
+        key = resolve_allowed_utm_key(resolve_record_utm_key(record, lead_fields))
+        if key:
+            return key
 
     return None
 
@@ -1198,38 +1274,25 @@ def build_daily_meeting_metrics(
     session = build_bitrix_session()
     meeting_entries = build_successful_meeting_entries(service, settings)
     daily_counts: dict[date, dict[UtmKey, UtmMetrics]] = defaultdict(lambda: defaultdict(UtmMetrics))
-    deal_cache: dict[str, dict[str, Any]] = {}
-    lead_cache: dict[str, dict[str, Any]] = {}
-    contact_cache: dict[str, dict[str, Any]] = {}
-    phone_source_cache: dict[str, str | None] = {}
-
-    source_key_map = {label: key for key, label in ALLOWED_UTM_RULES.items()}
+    caches = AttributionCaches(
+        deal_cache={},
+        lead_cache={},
+        contact_cache={},
+        phone_utm_cache={},
+    )
 
     for entry in meeting_entries:
         if entry.meeting_date < window.start.date() or entry.meeting_date > window.end.date():
             continue
 
-        source_label = resolve_allowed_source_for_lead_or_deal(
+        utm_key = resolve_allowed_utm_key_for_deal(
             session=session,
             settings=settings,
             deal_id=entry.deal_id,
-            deal_cache=deal_cache,
-            lead_cache=lead_cache,
-            contact_cache=contact_cache,
-            phone_source_cache=phone_source_cache,
+            caches=caches,
         )
-        if not source_label:
+        if utm_key is None:
             continue
-
-        source_key = source_key_map.get(source_label)
-        if source_key is None:
-            continue
-
-        utm_key = UtmKey(
-            utm_source=source_key[0],
-            utm_medium=source_key[1],
-            utm_campaign=source_key[2],
-        )
         daily_counts[entry.meeting_date][utm_key].meeting_show += 1
 
     return {current_date: dict(counter) for current_date, counter in daily_counts.items()}
