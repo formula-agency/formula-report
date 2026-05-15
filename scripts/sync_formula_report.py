@@ -30,7 +30,6 @@ ALLOWED_UTM_RULES = {
 KC_DASHBOARD_URL = "https://formula-agency.github.io/otchety/"
 DEFAULT_MEETING_LOG_SHEET_ID = "1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo"
 DEFAULT_MEETING_LOG_SHEET_NAME = "Meetings"
-UNLABELED_SOURCE_LABEL = "Без меток"
 LEAD_FALLBACK_UTM_FIELDS = {
     "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
     "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
@@ -703,12 +702,8 @@ def resolve_record_utm_key(record: dict[str, Any], field_candidates: dict[str, l
     )
 
 
-def is_unlabeled_utm_key(key: UtmKey) -> bool:
-    return not key.utm_source and not key.utm_medium and not key.utm_campaign
-
-
 def resolve_allowed_utm_key(key: UtmKey) -> UtmKey | None:
-    return key if resolve_allowed_source_label(key) is not None or is_unlabeled_utm_key(key) else None
+    return key if resolve_allowed_source_label(key) is not None else None
 
 
 def resolve_boolean_field(value: Any) -> bool:
@@ -1071,10 +1066,10 @@ def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tupl
         for record in records:
             key = resolve_record_utm_key(record, field_candidates)
             if not (key.utm_source and key.utm_medium and key.utm_campaign):
-                if settings.report_require_all_utm and not is_unlabeled_utm_key(key):
+                if settings.report_require_all_utm:
                     continue
 
-            if resolve_report_source_label(key, settings.report_unknown_source) is None:
+            if resolve_allowed_source_label(key) is None:
                 continue
 
             counter[key].records += 1
@@ -1228,7 +1223,7 @@ def resolve_allowed_utm_key_for_deal(
             if caches.phone_utm_cache[phone]:
                 return caches.phone_utm_cache[phone]
 
-    return UtmKey("", "", "")
+    return None
 
 
 def phone_search_variants(phone: str) -> list[str]:
@@ -1556,15 +1551,6 @@ def resolve_allowed_source_label(key: UtmKey) -> str | None:
     return ALLOWED_UTM_RULES.get((key.utm_source, key.utm_medium, key.utm_campaign))
 
 
-def resolve_report_source_label(key: UtmKey, unknown_source: str) -> str | None:
-    allowed_source = resolve_allowed_source_label(key)
-    if allowed_source is not None:
-        return allowed_source
-    if is_unlabeled_utm_key(key):
-        return UNLABELED_SOURCE_LABEL
-    return None
-
-
 def format_sheet_date(current_date: date) -> str:
     return current_date.strftime("%d.%m.%Y")
 
@@ -1736,7 +1722,7 @@ def build_source_summary_rows(
     for current_date, counter in daily_counts.items():
         month_key = (current_date.year, current_date.month)
         for utm_key, metrics in counter.items():
-            source_label = resolve_report_source_label(utm_key, unknown_source) or unknown_source
+            source_label = resolve_allowed_source_label(utm_key) or unknown_source
             month_metrics = monthly_source_totals[month_key].setdefault(source_label, UtmMetrics())
             month_metrics.records += metrics.records
             month_metrics.approved_mortgage += metrics.approved_mortgage
@@ -1834,7 +1820,7 @@ def build_dashboard_payload(
             key=lambda item: (item.utm_source, item.utm_medium, item.utm_campaign),
         ):
             metrics = daily_counts[current_date][key]
-            source_label = resolve_report_source_label(key, settings.report_unknown_source) or settings.report_unknown_source
+            source_label = resolve_allowed_source_label(key) or settings.report_unknown_source
 
             source_labels.add(source_label)
             utm_sources.add(key.utm_source)
