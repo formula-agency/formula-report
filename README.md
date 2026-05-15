@@ -42,6 +42,7 @@ pip install -r requirements.txt
 BITRIX_WEBHOOK_URL=https://your-company.bitrix24.ru/rest/1/your_webhook/
 BITRIX_ENTITY_TYPE=deal
 BITRIX_DATE_FIELD=DATE_CREATE
+BITRIX_DEAL_CATEGORY_ID=1
 BITRIX_UTM_SOURCE_FIELD=UTM_SOURCE
 BITRIX_UTM_MEDIUM_FIELD=UTM_MEDIUM
 BITRIX_UTM_CAMPAIGN_FIELD=UTM_CAMPAIGN
@@ -104,6 +105,7 @@ python scripts/sync_formula_report.py --env-file bitrix.env
 
 - скрипт берет данные из Bitrix начиная с `REPORT_START_DATE`
 - учитываются записи любых стадий, но только с заполненными `utm_source`, `utm_medium`, `utm_campaign`
+- для всех сделочных метрик используются только сделки из воронки `Льготная ипотека` (`BITRIX_DEAL_CATEGORY_ID=1`)
 - строки перестраиваются так:
   - строка `Итого за <месяц>`
   - внутри нее строки `Итого за <день>`

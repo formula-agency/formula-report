@@ -30,6 +30,7 @@ ALLOWED_UTM_RULES = {
 KC_DASHBOARD_URL = "https://formula-agency.github.io/otchety/"
 DEFAULT_MEETING_LOG_SHEET_ID = "1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo"
 DEFAULT_MEETING_LOG_SHEET_NAME = "Meetings"
+UNLABELED_SOURCE_LABEL = "Без меток"
 LEAD_FALLBACK_UTM_FIELDS = {
     "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
     "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
@@ -191,6 +192,7 @@ class Settings:
     bitrix_webhook_url: str
     bitrix_entity_type: str
     bitrix_date_field: str
+    bitrix_deal_category_id: str | None
     bitrix_utm_source_field: str
     bitrix_utm_medium_field: str
     bitrix_utm_campaign_field: str
@@ -357,6 +359,7 @@ def load_settings() -> Settings:
         bitrix_webhook_url=require_env("BITRIX_WEBHOOK_URL"),
         bitrix_entity_type=bitrix_entity_type,
         bitrix_date_field=os.getenv("BITRIX_DATE_FIELD", "DATE_CREATE").strip() or "DATE_CREATE",
+        bitrix_deal_category_id=os.getenv("BITRIX_DEAL_CATEGORY_ID", "1").strip() or "1",
         bitrix_utm_source_field=os.getenv("BITRIX_UTM_SOURCE_FIELD", "UTM_SOURCE").strip() or "UTM_SOURCE",
         bitrix_utm_medium_field=os.getenv("BITRIX_UTM_MEDIUM_FIELD", "UTM_MEDIUM").strip() or "UTM_MEDIUM",
         bitrix_utm_campaign_field=os.getenv("BITRIX_UTM_CAMPAIGN_FIELD", "UTM_CAMPAIGN").strip() or "UTM_CAMPAIGN",
@@ -700,8 +703,12 @@ def resolve_record_utm_key(record: dict[str, Any], field_candidates: dict[str, l
     )
 
 
+def is_unlabeled_utm_key(key: UtmKey) -> bool:
+    return not key.utm_source and not key.utm_medium and not key.utm_campaign
+
+
 def resolve_allowed_utm_key(key: UtmKey) -> UtmKey | None:
-    return key if resolve_allowed_source_label(key) is not None else None
+    return key if resolve_allowed_source_label(key) is not None or is_unlabeled_utm_key(key) else None
 
 
 def resolve_boolean_field(value: Any) -> bool:
@@ -767,6 +774,13 @@ def resolve_deal_record_metrics(
     metrics.reservation = int(reservation)
     metrics.closed = int(closed)
     return metrics
+
+
+def deal_in_allowed_category(record: dict[str, Any], settings: Settings) -> bool:
+    expected_category_id = (settings.bitrix_deal_category_id or "").strip()
+    if not expected_category_id:
+        return True
+    return str(record.get("CATEGORY_ID") or "").strip() == expected_category_id
 
 
 def build_bitrix_session() -> requests.Session:
@@ -859,9 +873,12 @@ def fetch_day_records_for_entity(
     date_field: str,
     day_start: datetime,
     day_end: datetime,
+    filters: dict[str, str] | None,
     select_fields: list[str],
 ) -> list[dict[str, Any]]:
-    filters = build_day_filters(date_field, day_start, day_end)
+    resolved_filters = build_day_filters(date_field, day_start, day_end)
+    if filters:
+        resolved_filters.update(filters)
     records: list[dict[str, Any]] = []
     next_page: int | None = 0
 
@@ -870,7 +887,7 @@ def fetch_day_records_for_entity(
             session=session,
             settings=settings,
             entity_type=entity_type,
-            filters=filters,
+            filters=resolved_filters,
             select_fields=select_fields,
             start=next_page,
         )
@@ -1046,6 +1063,7 @@ def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tupl
             date_field=settings.bitrix_date_field,
             day_start=day_start,
             day_end=day_end,
+            filters=None,
             select_fields=select_fields,
         )
         counter: dict[UtmKey, UtmMetrics] = defaultdict(UtmMetrics)
@@ -1053,10 +1071,10 @@ def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tupl
         for record in records:
             key = resolve_record_utm_key(record, field_candidates)
             if not (key.utm_source and key.utm_medium and key.utm_campaign):
-                if settings.report_require_all_utm:
+                if settings.report_require_all_utm and not is_unlabeled_utm_key(key):
                     continue
 
-            if resolve_allowed_source_label(key) is None:
+            if resolve_report_source_label(key, settings.report_unknown_source) is None:
                 continue
 
             counter[key].records += 1
@@ -1089,6 +1107,7 @@ def build_daily_deal_metrics(
         "STAGE_SEMANTIC_ID",
         "LEAD_ID",
         "CONTACT_ID",
+        "CATEGORY_ID",
     ]
     for field_name in (
         field_candidates["source"]
@@ -1115,6 +1134,7 @@ def build_daily_deal_metrics(
             date_field="DATE_CREATE",
             day_start=day_start,
             day_end=day_end,
+            filters={"CATEGORY_ID": settings.bitrix_deal_category_id} if settings.bitrix_deal_category_id else None,
             select_fields=select_fields,
         )
         counter: dict[UtmKey, UtmMetrics] = defaultdict(UtmMetrics)
@@ -1168,6 +1188,9 @@ def resolve_allowed_utm_key_for_deal(
     if resolved_deal_id and resolved_deal_id not in caches.deal_cache:
         caches.deal_cache[resolved_deal_id] = deal
 
+    if not deal_in_allowed_category(deal, settings):
+        return None
+
     deal_key = resolve_allowed_utm_key(
         resolve_record_utm_key(deal, get_deal_utm_field_candidates(settings))
     )
@@ -1205,7 +1228,7 @@ def resolve_allowed_utm_key_for_deal(
             if caches.phone_utm_cache[phone]:
                 return caches.phone_utm_cache[phone]
 
-    return None
+    return UtmKey("", "", "")
 
 
 def phone_search_variants(phone: str) -> list[str]:
@@ -1533,6 +1556,15 @@ def resolve_allowed_source_label(key: UtmKey) -> str | None:
     return ALLOWED_UTM_RULES.get((key.utm_source, key.utm_medium, key.utm_campaign))
 
 
+def resolve_report_source_label(key: UtmKey, unknown_source: str) -> str | None:
+    allowed_source = resolve_allowed_source_label(key)
+    if allowed_source is not None:
+        return allowed_source
+    if is_unlabeled_utm_key(key):
+        return UNLABELED_SOURCE_LABEL
+    return None
+
+
 def format_sheet_date(current_date: date) -> str:
     return current_date.strftime("%d.%m.%Y")
 
@@ -1704,7 +1736,7 @@ def build_source_summary_rows(
     for current_date, counter in daily_counts.items():
         month_key = (current_date.year, current_date.month)
         for utm_key, metrics in counter.items():
-            source_label = resolve_allowed_source_label(utm_key) or unknown_source
+            source_label = resolve_report_source_label(utm_key, unknown_source) or unknown_source
             month_metrics = monthly_source_totals[month_key].setdefault(source_label, UtmMetrics())
             month_metrics.records += metrics.records
             month_metrics.approved_mortgage += metrics.approved_mortgage
@@ -1802,7 +1834,7 @@ def build_dashboard_payload(
             key=lambda item: (item.utm_source, item.utm_medium, item.utm_campaign),
         ):
             metrics = daily_counts[current_date][key]
-            source_label = resolve_allowed_source_label(key) or settings.report_unknown_source
+            source_label = resolve_report_source_label(key, settings.report_unknown_source) or settings.report_unknown_source
 
             source_labels.add(source_label)
             utm_sources.add(key.utm_source)
