@@ -126,6 +126,7 @@ class UtmKey:
 @dataclass
 class UtmMetrics:
     records: int = 0
+    deals: int = 0
     approved_mortgage: int = 0
     meeting_show: int = 0
     reservation: int = 0
@@ -147,6 +148,7 @@ class UtmMetrics:
     def merge(self, other: "UtmMetrics") -> "UtmMetrics":
         return UtmMetrics(
             records=self.records + other.records,
+            deals=self.deals + other.deals,
             approved_mortgage=self.approved_mortgage + other.approved_mortgage,
             meeting_show=self.meeting_show + other.meeting_show,
             reservation=self.reservation + other.reservation,
@@ -760,6 +762,7 @@ def resolve_deal_record_metrics(
     closed = resolve_deal_closed(record, settings)
 
     metrics = UtmMetrics()
+    metrics.deals = 1
     metrics.approved_mortgage = int(approved)
     metrics.reservation = int(reservation)
     metrics.closed = int(closed)
@@ -1130,6 +1133,7 @@ def build_daily_deal_metrics(
 
             metrics = resolve_deal_record_metrics(record, settings)
             target = counter[key]
+            target.deals += metrics.deals
             target.approved_mortgage += metrics.approved_mortgage
             target.reservation += metrics.reservation
             target.closed += metrics.closed
@@ -1306,6 +1310,7 @@ def overlay_deal_metrics(
         current_date: {
             key: UtmMetrics(
                 records=metrics.records,
+                deals=metrics.deals,
                 approved_mortgage=metrics.approved_mortgage,
                 meeting_show=metrics.meeting_show,
                 reservation=metrics.reservation,
@@ -1317,12 +1322,10 @@ def overlay_deal_metrics(
     }
 
     for current_date, day_counter in deal_metrics.items():
-        if current_date not in merged_counts:
-            continue
+        target_counter = merged_counts.setdefault(current_date, {})
         for key, metrics in day_counter.items():
-            if key not in merged_counts[current_date]:
-                continue
-            target = merged_counts[current_date][key]
+            target = target_counter.setdefault(key, UtmMetrics())
+            target.deals += metrics.deals
             target.approved_mortgage += metrics.approved_mortgage
             target.meeting_show += metrics.meeting_show
             target.reservation += metrics.reservation
@@ -1339,6 +1342,7 @@ def overlay_meeting_metrics(
         current_date: {
             key: UtmMetrics(
                 records=metrics.records,
+                deals=metrics.deals,
                 approved_mortgage=metrics.approved_mortgage,
                 meeting_show=metrics.meeting_show,
                 reservation=metrics.reservation,
@@ -1782,9 +1786,11 @@ def build_dashboard_payload(
 
     totals = {
         "records": 0,
+        "deals": 0,
         "approvedMortgage": 0,
         "meetingShow": 0,
         "reservation": 0,
+        "sales": 0,
         "closedDeals": 0,
     }
 
@@ -1805,9 +1811,11 @@ def build_dashboard_payload(
             utm_combinations.add((key.utm_source, key.utm_medium, key.utm_campaign))
 
             totals["records"] += metrics.records
+            totals["deals"] += metrics.deals
             totals["approvedMortgage"] += metrics.approved_mortgage
             totals["meetingShow"] += metrics.meeting_show
             totals["reservation"] += metrics.reservation
+            totals["sales"] += metrics.closed
             totals["closedDeals"] += metrics.closed
 
             dashboard_rows.append(
@@ -1819,9 +1827,11 @@ def build_dashboard_payload(
                     "utmMedium": key.utm_medium,
                     "utmCampaign": key.utm_campaign,
                     "records": metrics.records,
+                    "deals": metrics.deals,
                     "approvedMortgage": metrics.approved_mortgage,
                     "meetingShow": metrics.meeting_show,
                     "reservation": metrics.reservation,
+                    "sales": metrics.closed,
                     "closedDeals": metrics.closed,
                 }
             )

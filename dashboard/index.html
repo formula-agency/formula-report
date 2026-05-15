@@ -6,8 +6,8 @@
   <title>Отчет ОП</title>
   <link rel="stylesheet" href="./styles.css">
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script defer src="./data/report-data.js?v=20260513-1"></script>
-  <script defer src="./app.js?v=20260513-1"></script>
+  <script defer src="./data/report-data.js?v=20260515-1"></script>
+  <script defer src="./app.js?v=20260515-1"></script>
 </head>
 <body>
   <header class="site-header">
@@ -34,7 +34,7 @@
       <div class="overview-strip__header">
         <p class="eyebrow">Внутренний отчет</p>
         <h1 id="overview-title">Отчет ОП</h1>
-        <p class="overview-strip__lead">Срез по источникам и сделочным метрикам: лиды, ипотека, встречи, брони и закрытые сделки.</p>
+        <p class="overview-strip__lead">Срез по источникам и метрикам воронки: лиды, сделки, ипотека, встречи, брони и продажи.</p>
       </div>
 
       <div class="overview-summary-row" aria-label="Краткая сводка">
@@ -45,6 +45,10 @@
         <article class="overview-stat">
           <span>Лидов</span>
           <strong id="hero-records">0</strong>
+        </article>
+        <article class="overview-stat">
+          <span>Сделки</span>
+          <strong id="hero-deals">0</strong>
         </article>
         <article class="overview-stat">
           <span>Ипотека</span>
@@ -59,7 +63,7 @@
           <strong id="hero-reservations">0</strong>
         </article>
         <article class="overview-stat">
-          <span>Сделки</span>
+          <span>Продажи</span>
           <strong id="hero-closed">0</strong>
         </article>
       </div>
@@ -96,6 +100,10 @@
           <span class="kpi-label">Лиды</span>
           <strong id="kpi-records" class="kpi-value">0</strong>
         </article>
+        <article class="kpi-card accent-violet">
+          <span class="kpi-label">Сделки</span>
+          <strong id="kpi-deals" class="kpi-value">0</strong>
+        </article>
         <article class="kpi-card accent-emerald">
           <span class="kpi-label">Одобрена ипотека</span>
           <strong id="kpi-approved" class="kpi-value">0</strong>
@@ -109,11 +117,11 @@
           <strong id="kpi-reservations" class="kpi-value">0</strong>
         </article>
         <article class="kpi-card accent-lime">
-          <span class="kpi-label">Закрыто сделок</span>
+          <span class="kpi-label">Продажи</span>
           <strong id="kpi-closed" class="kpi-value">0</strong>
         </article>
-        <article class="kpi-card accent-violet">
-          <span class="kpi-label">CR в закрытую сделку</span>
+        <article class="kpi-card accent-coral">
+          <span class="kpi-label">Конверсия в продажу</span>
           <strong id="kpi-cr" class="kpi-value">0%</strong>
         </article>
       </section>
@@ -122,7 +130,7 @@
         <article class="panel panel-wide">
           <div class="panel-head">
             <h2>Динамика по дням</h2>
-            <p>Лиды, бронь и закрытые сделки</p>
+            <p>Лиды, сделки и продажи</p>
           </div>
           <div class="chart-frame chart-frame--daily">
             <canvas id="daily-chart" height="120"></canvas>
@@ -143,10 +151,12 @@
                   <th>Период</th>
                   <th>Источник</th>
                   <th>Лиды</th>
+                  <th>Сделки</th>
+                  <th>Конверсия в продажу</th>
                   <th>Одобрена ипотека</th>
                   <th>Встреча/показ</th>
                   <th>Бронь</th>
-                  <th>Сделки</th>
+                  <th>Продажи</th>
                 </tr>
               </thead>
               <tbody id="source-summary-body"></tbody>
@@ -178,11 +188,12 @@
                   <th>utm medium</th>
                   <th>utm campaign</th>
                   <th>Лиды</th>
+                  <th>Сделки</th>
+                  <th>Конверсия в продажу</th>
                   <th>Ипотека</th>
                   <th>Встреча/показ</th>
                   <th>Бронь</th>
-                  <th>Сделки</th>
-                  <th>CR</th>
+                  <th>Продажи</th>
                 </tr>
               </thead>
               <tbody id="detail-body"></tbody>
@@ -215,7 +226,7 @@
         <article class="panel panel-wide">
           <div class="panel-head">
             <h2>Источники по результату</h2>
-            <p>Сравнение ипотек, встреч, броней и сделок</p>
+            <p>Сравнение сделок, ипотек, встреч, броней и продаж</p>
           </div>
           <div class="chart-frame chart-frame--performance">
             <canvas id="performance-chart" height="140"></canvas>

@@ -15,6 +15,7 @@ const els = {
   kcReportLink: document.getElementById('kc-report-link'),
   heroSources: document.getElementById('hero-sources'),
   heroRecords: document.getElementById('hero-records'),
+  heroDeals: document.getElementById('hero-deals'),
   heroApproved: document.getElementById('hero-approved'),
   heroMeetings: document.getElementById('hero-meetings'),
   heroReservations: document.getElementById('hero-reservations'),
@@ -32,6 +33,7 @@ const els = {
   detailBody: document.getElementById('detail-body'),
   exportCsv: document.getElementById('export-csv'),
   kpiRecords: document.getElementById('kpi-records'),
+  kpiDeals: document.getElementById('kpi-deals'),
   kpiApproved: document.getElementById('kpi-approved'),
   kpiMeetings: document.getElementById('kpi-meetings'),
   kpiReservations: document.getElementById('kpi-reservations'),
@@ -96,6 +98,10 @@ function clampDate(value, minValue, maxValue) {
   return value;
 }
 
+function localIsoDate(year, monthIndex, day) {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
 function resolveDefaultDateRange(filters = {}) {
   const minDate = filters.minDate || '';
   const maxDate = filters.maxDate || '';
@@ -104,7 +110,7 @@ function resolveDefaultDateRange(filters = {}) {
   }
 
   const anchor = new Date(`${maxDate}T00:00:00`);
-  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1).toISOString().slice(0, 10);
+  const monthStart = localIsoDate(anchor.getFullYear(), anchor.getMonth(), 1);
   return {
     dateFrom: clampDate(monthStart, minDate, maxDate),
     dateTo: maxDate,
@@ -159,17 +165,19 @@ function filteredRows() {
 function summarizeRows(rows) {
   return rows.reduce((acc, row) => {
     acc.records += Number(row.records || 0);
+    acc.deals += Number(row.deals || 0);
     acc.approvedMortgage += Number(row.approvedMortgage || 0);
     acc.meetingShow += Number(row.meetingShow || 0);
     acc.reservation += Number(row.reservation || 0);
-    acc.closedDeals += Number(row.closedDeals || 0);
+    acc.sales += Number((row.sales ?? row.closedDeals) || 0);
     return acc;
   }, {
     records: 0,
+    deals: 0,
     approvedMortgage: 0,
     meetingShow: 0,
     reservation: 0,
-    closedDeals: 0,
+    sales: 0,
   });
 }
 
@@ -221,19 +229,21 @@ function summarizeSourceTable(rows) {
         period,
         source,
         records: 0,
+        deals: 0,
         approvedMortgage: 0,
         meetingShow: 0,
         reservation: 0,
-        closedDeals: 0,
+        sales: 0,
       });
     }
 
     const group = groups.get(key);
     group.records += Number(row.records || 0);
+    group.deals += Number(row.deals || 0);
     group.approvedMortgage += Number(row.approvedMortgage || 0);
     group.meetingShow += Number(row.meetingShow || 0);
     group.reservation += Number(row.reservation || 0);
-    group.closedDeals += Number(row.closedDeals || 0);
+    group.sales += Number((row.sales ?? row.closedDeals) || 0);
   }
 
   return [...groups.values()].sort((a, b) => `${a.month}_${a.source}`.localeCompare(`${b.month}_${b.source}`));
@@ -245,20 +255,22 @@ function renderHero(rows) {
 
   setText(els.heroSources, formatNumber(uniqueSources));
   setText(els.heroRecords, formatNumber(summary.records));
+  setText(els.heroDeals, formatNumber(summary.deals));
   setText(els.heroApproved, formatNumber(summary.approvedMortgage));
   setText(els.heroMeetings, formatNumber(summary.meetingShow));
   setText(els.heroReservations, formatNumber(summary.reservation));
-  setText(els.heroClosed, formatNumber(summary.closedDeals));
+  setText(els.heroClosed, formatNumber(summary.sales));
 }
 
 function renderKpis(rows) {
   const summary = summarizeRows(rows);
   els.kpiRecords.textContent = formatNumber(summary.records);
+  els.kpiDeals.textContent = formatNumber(summary.deals);
   els.kpiApproved.textContent = formatNumber(summary.approvedMortgage);
   els.kpiMeetings.textContent = formatNumber(summary.meetingShow);
   els.kpiReservations.textContent = formatNumber(summary.reservation);
-  els.kpiClosed.textContent = formatNumber(summary.closedDeals);
-  els.kpiCr.textContent = formatPercent(summary.records > 0 ? summary.closedDeals / summary.records : 0);
+  els.kpiClosed.textContent = formatNumber(summary.sales);
+  els.kpiCr.textContent = formatPercent(summary.deals > 0 ? summary.sales / summary.deals : 0);
 }
 
 function renderActiveState(rows) {
@@ -274,7 +286,7 @@ function renderActiveState(rows) {
 
   const summary = summarizeRows(rows);
   const uniqueSources = new Set(rows.map((row) => row.sourceLabel).filter(Boolean)).size;
-  els.selectionSummary.textContent = `Строк: ${formatNumber(rows.length)} · Источников: ${formatNumber(uniqueSources)} · Лидов: ${formatNumber(summary.records)}`;
+  els.selectionSummary.textContent = `Строк: ${formatNumber(rows.length)} · Источников: ${formatNumber(uniqueSources)} · Лидов: ${formatNumber(summary.records)} · Сделок: ${formatNumber(summary.deals)} · Продаж: ${formatNumber(summary.sales)}`;
 }
 
 function populateDetailDateSelect(rows) {
@@ -338,7 +350,7 @@ function renderDetailCaption(detailView) {
 function renderSourceSummaryTable(rows) {
   const summaryRows = summarizeSourceTable(rows);
   if (summaryRows.length === 0) {
-    els.sourceSummaryBody.innerHTML = '<tr class="empty-row"><td colspan="7">Нет данных</td></tr>';
+    els.sourceSummaryBody.innerHTML = '<tr class="empty-row"><td colspan="9">Нет данных</td></tr>';
     return;
   }
 
@@ -348,10 +360,12 @@ function renderSourceSummaryTable(rows) {
         <td>${row.period}</td>
         <td>${row.source}</td>
         <td>${formatNumber(row.records)}</td>
+        <td>${formatNumber(row.deals)}</td>
+        <td>${formatPercent(Number(row.deals || 0) > 0 ? Number(row.sales || 0) / Number(row.deals || 0) : 0)}</td>
         <td>${formatNumber(row.approvedMortgage)}</td>
         <td>${formatNumber(row.meetingShow)}</td>
         <td>${formatNumber(row.reservation)}</td>
-        <td>${formatNumber(row.closedDeals)}</td>
+        <td>${formatNumber(row.sales)}</td>
       </tr>
     `)
     .join('');
@@ -359,13 +373,14 @@ function renderSourceSummaryTable(rows) {
 
 function renderDetailTable(rows) {
   if (rows.length === 0) {
-    els.detailBody.innerHTML = '<tr class="empty-row"><td colspan="11">Нет данных</td></tr>';
+    els.detailBody.innerHTML = '<tr class="empty-row"><td colspan="12">Нет данных</td></tr>';
     return;
   }
 
   els.detailBody.innerHTML = rows
     .map((row) => {
-      const cr = Number(row.records || 0) > 0 ? Number(row.closedDeals || 0) / Number(row.records || 0) : 0;
+      const sales = Number((row.sales ?? row.closedDeals) || 0);
+      const saleConversion = Number(row.deals || 0) > 0 ? sales / Number(row.deals || 0) : 0;
       return `
         <tr>
           <td>${formatDate(row.uploadDate)}</td>
@@ -374,11 +389,12 @@ function renderDetailTable(rows) {
           <td>${row.utmMedium || '—'}</td>
           <td>${row.utmCampaign || '—'}</td>
           <td>${formatNumber(row.records)}</td>
+          <td>${formatNumber(row.deals)}</td>
+          <td>${formatPercent(saleConversion)}</td>
           <td>${formatNumber(row.approvedMortgage)}</td>
           <td>${formatNumber(row.meetingShow)}</td>
           <td>${formatNumber(row.reservation)}</td>
-          <td>${formatNumber(row.closedDeals)}</td>
-          <td>${formatPercent(cr)}</td>
+          <td>${formatNumber(sales)}</td>
         </tr>
       `;
     })
@@ -509,18 +525,18 @@ function renderCharts(rows) {
     },
     {
       type: 'line',
-      label: 'Бронь',
-      data: dailyRows.map((row) => row.reservation),
-      borderColor: chartPalette.amber,
-      backgroundColor: chartPalette.amber,
+      label: 'Сделки',
+      data: dailyRows.map((row) => row.deals),
+      borderColor: chartPalette.violet,
+      backgroundColor: chartPalette.violet,
       tension: 0.25,
       pointRadius: 3,
       yAxisID: 'y1',
     },
     {
       type: 'line',
-      label: 'Сделки',
-      data: dailyRows.map((row) => row.closedDeals),
+      label: 'Продажи',
+      data: dailyRows.map((row) => (row.sales ?? row.closedDeals)),
       borderColor: chartPalette.coral,
       backgroundColor: chartPalette.coral,
       tension: 0.25,
@@ -547,20 +563,22 @@ function renderCharts(rows) {
   sourceChart.update();
 
   const summary = summarizeRows(rows);
-  funnelChart.data.labels = ['Лиды', 'Ипотека', 'Встреча/показ', 'Бронь', 'Сделки'];
+  funnelChart.data.labels = ['Лиды', 'Сделки', 'Ипотека', 'Встреча/показ', 'Бронь', 'Продажи'];
   funnelChart.data.datasets = [{
     data: [
       summary.records,
+      summary.deals,
       summary.approvedMortgage,
       summary.meetingShow,
       summary.reservation,
-      summary.closedDeals,
+      summary.sales,
     ],
     backgroundColor: [
       chartPalette.cyan,
+      chartPalette.violet,
       chartPalette.emerald,
       chartPalette.amber,
-      chartPalette.violet,
+      chartPalette.lime,
       chartPalette.coral,
     ],
     borderRadius: 6,
@@ -570,6 +588,12 @@ function renderCharts(rows) {
   const performanceRows = sourceRows.slice(0, 6);
   performanceChart.data.labels = performanceRows.map((row) => row.source);
   performanceChart.data.datasets = [
+    {
+      label: 'Сделки',
+      data: performanceRows.map((row) => row.deals),
+      backgroundColor: chartPalette.violet,
+      borderRadius: 4,
+    },
     {
       label: 'Ипотека',
       data: performanceRows.map((row) => row.approvedMortgage),
@@ -589,8 +613,8 @@ function renderCharts(rows) {
       borderRadius: 4,
     },
     {
-      label: 'Сделки',
-      data: performanceRows.map((row) => row.closedDeals),
+      label: 'Продажи',
+      data: performanceRows.map((row) => (row.sales ?? row.closedDeals)),
       backgroundColor: chartPalette.coral,
       borderRadius: 4,
     },
@@ -599,9 +623,10 @@ function renderCharts(rows) {
 }
 
 function exportCsv(rows) {
-  const header = ['Дата', 'Источник', 'utm source', 'utm medium', 'utm campaign', 'Лиды', 'Одобрена ипотека', 'Встреча/показ', 'Бронь', 'Сделки', 'CR'];
+  const header = ['Дата', 'Источник', 'utm source', 'utm medium', 'utm campaign', 'Лиды', 'Сделки', 'Конверсия в продажу', 'Одобрена ипотека', 'Встреча/показ', 'Бронь', 'Продажи'];
   const body = rows.map((row) => {
-    const cr = Number(row.records || 0) > 0 ? Number(row.closedDeals || 0) / Number(row.records || 0) : 0;
+    const sales = Number((row.sales ?? row.closedDeals) || 0);
+    const saleConversion = Number(row.deals || 0) > 0 ? sales / Number(row.deals || 0) : 0;
     return [
       row.uploadDate,
       row.sourceLabel,
@@ -609,11 +634,12 @@ function exportCsv(rows) {
       row.utmMedium,
       row.utmCampaign,
       row.records,
+      row.deals,
+      saleConversion,
       row.approvedMortgage,
       row.meetingShow,
       row.reservation,
-      row.closedDeals,
-      cr,
+      sales,
     ];
   });
   const csv = [header, ...body].map((line) => line.map(csvEscape).join(';')).join('\r\n');
