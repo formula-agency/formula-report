@@ -162,7 +162,23 @@ function filteredRows() {
   });
 }
 
-function summarizeRows(rows) {
+function rawMeetingDailyTotals() {
+  return Array.isArray(data?.rawMeetingDailyTotals) ? data.rawMeetingDailyTotals : [];
+}
+
+function shouldUseRawMeetingTotals() {
+  return state.sourceLabel === 'all' && !normalizeSearch(state.search);
+}
+
+function sumRawMeetingTotalsForState() {
+  return rawMeetingDailyTotals().reduce((acc, row) => {
+    if (state.dateFrom && row.uploadDate < state.dateFrom) return acc;
+    if (state.dateTo && row.uploadDate > state.dateTo) return acc;
+    return acc + Number(row.meetingShow || 0);
+  }, 0);
+}
+
+function summarizeRowsBase(rows) {
   return rows.reduce((acc, row) => {
     acc.records += Number(row.records || 0);
     acc.deals += Number(row.deals || 0);
@@ -181,6 +197,14 @@ function summarizeRows(rows) {
   });
 }
 
+function summarizeRows(rows) {
+  const summary = summarizeRowsBase(rows);
+  if (shouldUseRawMeetingTotals()) {
+    summary.meetingShow = sumRawMeetingTotalsForState();
+  }
+  return summary;
+}
+
 function summarizeByDate(rows) {
   const groups = new Map();
 
@@ -190,12 +214,38 @@ function summarizeByDate(rows) {
     groups.get(key).push(row);
   }
 
-  return [...groups.entries()]
+  const summaryRows = [...groups.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, items]) => ({
       date,
-      ...summarizeRows(items),
+      ...summarizeRowsBase(items),
     }));
+
+  if (!shouldUseRawMeetingTotals()) {
+    return summaryRows;
+  }
+
+  const summaryMap = new Map(summaryRows.map((row) => [row.date, row]));
+  for (const row of rawMeetingDailyTotals()) {
+    if (state.dateFrom && row.uploadDate < state.dateFrom) continue;
+    if (state.dateTo && row.uploadDate > state.dateTo) continue;
+
+    if (!summaryMap.has(row.uploadDate)) {
+      summaryMap.set(row.uploadDate, {
+        date: row.uploadDate,
+        records: 0,
+        deals: 0,
+        approvedMortgage: 0,
+        meetingShow: 0,
+        reservation: 0,
+        sales: 0,
+      });
+    }
+
+    summaryMap.get(row.uploadDate).meetingShow = Number(row.meetingShow || 0);
+  }
+
+  return [...summaryMap.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function summarizeBySource(rows) {

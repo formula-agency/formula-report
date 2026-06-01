@@ -93,6 +93,7 @@ HEADER_ALIASES = {
 }
 MEETING_LOG_HEADER_ALIASES = {
     "status": {"статус", "status", "результат", "result"},
+    "meeting_created": {"дата создания", "created at", "create date", "created"},
     "meeting_start": {"начало встречи", "start", "meeting start"},
     "deal_id": {"id сделки", "deal id", "id deal"},
     "deal_link": {"ссылка на сделку", "deal link", "link"},
@@ -1009,9 +1010,9 @@ def build_successful_meeting_entries(service: Any, settings: Settings) -> list[M
         if normalize_text(status_value) not in SUCCESSFUL_MEETING_STATUSES:
             continue
 
-        meeting_start_index = column_map["meeting_start"]
-        meeting_start_value = row[meeting_start_index] if meeting_start_index < len(row) else ""
-        meeting_datetime = parse_sheet_datetime(meeting_start_value, settings.report_timezone)
+        meeting_created_index = column_map["meeting_created"]
+        meeting_created_value = row[meeting_created_index] if meeting_created_index < len(row) else ""
+        meeting_datetime = parse_sheet_datetime(meeting_created_value, settings.report_timezone)
         if meeting_datetime is None:
             continue
 
@@ -1031,6 +1032,18 @@ def build_successful_meeting_entries(service: Any, settings: Settings) -> list[M
         entries.append(MeetingLogEntry(meeting_date=meeting_datetime.date(), deal_id=deal_id))
 
     return entries
+
+
+def build_raw_meeting_daily_counts(
+    meeting_entries: list[MeetingLogEntry],
+    window: ReportWindow,
+) -> dict[date, int]:
+    counts: dict[date, int] = defaultdict(int)
+    for entry in meeting_entries:
+        if entry.meeting_date < window.start.date() or entry.meeting_date > window.end.date():
+            continue
+        counts[entry.meeting_date] += 1
+    return dict(counts)
 
 
 def build_primary_daily_counts(settings: Settings, window: ReportWindow) -> tuple[dict[date, dict[UtmKey, UtmMetrics]], int]:
@@ -1165,6 +1178,7 @@ def resolve_allowed_utm_key_for_deal(
     deal_id: str,
     caches: AttributionCaches,
     deal_record: dict[str, Any] | None = None,
+    enforce_category: bool = True,
 ) -> UtmKey | None:
     if not deal_id and not deal_record:
         return None
@@ -1183,7 +1197,7 @@ def resolve_allowed_utm_key_for_deal(
     if resolved_deal_id and resolved_deal_id not in caches.deal_cache:
         caches.deal_cache[resolved_deal_id] = deal
 
-    if not deal_in_allowed_category(deal, settings):
+    if enforce_category and not deal_in_allowed_category(deal, settings):
         return None
 
     deal_key = resolve_allowed_utm_key(
@@ -1289,12 +1303,11 @@ def find_first_allowed_utm_key_by_phone(
 
 
 def build_daily_meeting_metrics(
-    service: Any,
     settings: Settings,
     window: ReportWindow,
+    meeting_entries: list[MeetingLogEntry],
 ) -> dict[date, dict[UtmKey, UtmMetrics]]:
     session = build_bitrix_session()
-    meeting_entries = build_successful_meeting_entries(service, settings)
     daily_counts: dict[date, dict[UtmKey, UtmMetrics]] = defaultdict(lambda: defaultdict(UtmMetrics))
     caches = AttributionCaches(
         deal_cache={},
@@ -1312,6 +1325,7 @@ def build_daily_meeting_metrics(
             settings=settings,
             deal_id=entry.deal_id,
             caches=caches,
+            enforce_category=False,
         )
         if utm_key is None:
             continue
@@ -1474,7 +1488,7 @@ def extract_deal_id_from_link(value: Any) -> str:
 
 
 def find_meeting_log_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]]:
-    required_columns = ("status", "meeting_start")
+    required_columns = ("status", "meeting_created")
     optional_columns = ("deal_id", "deal_link")
     column_map: dict[str, int] = {}
     matched_rows: list[int] = []
@@ -1483,7 +1497,7 @@ def find_meeting_log_columns(rows: list[list[Any]]) -> tuple[int, dict[str, int]
         match = find_first_matching_alias(rows, MEETING_LOG_HEADER_ALIASES[canonical_name])
         if match is None:
             raise ConfigError(
-                "Could not find required meeting log columns. Expected 'Результат/Статус' and 'Начало встречи'."
+                "Could not find required meeting log columns. Expected 'Результат/Статус' and 'Дата создания'."
             )
         row_index, column_index = match
         column_map[canonical_name] = column_index
@@ -1792,6 +1806,7 @@ def build_source_summary_rows(
 
 def build_dashboard_payload(
     daily_counts: dict[date, dict[UtmKey, UtmMetrics]],
+    raw_meeting_daily_counts: dict[date, int],
     settings: Settings,
     window: ReportWindow,
 ) -> dict[str, Any]:
@@ -1868,6 +1883,13 @@ def build_dashboard_payload(
             "opDashboardUrl": "./",
         },
         "generatedAt": generated_at,
+        "rawMeetingDailyTotals": [
+            {
+                "uploadDate": current_date.isoformat(),
+                "meetingShow": raw_meeting_daily_counts[current_date],
+            }
+            for current_date in sorted(raw_meeting_daily_counts)
+        ],
         "filters": {
             "sourceLabels": sorted(source_labels),
             "utmSources": sorted(utm_sources),
@@ -2384,7 +2406,9 @@ def main() -> int:
 
         primary_day_counters, _ = build_primary_daily_counts(settings, window)
         deal_day_metrics = build_daily_deal_metrics(settings, window)
-        meeting_day_metrics = build_daily_meeting_metrics(sheets_service, settings, window)
+        meeting_entries = build_successful_meeting_entries(sheets_service, settings)
+        raw_meeting_daily_counts = build_raw_meeting_daily_counts(meeting_entries, window)
+        meeting_day_metrics = build_daily_meeting_metrics(settings, window, meeting_entries)
         day_counters = overlay_deal_metrics(primary_day_counters, deal_day_metrics)
         day_counters = overlay_meeting_metrics(day_counters, meeting_day_metrics)
         result = build_report_rows(
@@ -2400,6 +2424,7 @@ def main() -> int:
         )
         dashboard_payload = build_dashboard_payload(
             daily_counts=day_counters,
+            raw_meeting_daily_counts=raw_meeting_daily_counts,
             settings=settings,
             window=window,
         )
