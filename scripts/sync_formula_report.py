@@ -30,6 +30,7 @@ ALLOWED_UTM_RULES = {
 KC_DASHBOARD_URL = "https://formula-agency.github.io/otchety/"
 DEFAULT_MEETING_LOG_SHEET_ID = "1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo"
 DEFAULT_MEETING_LOG_SHEET_NAME = "Meetings"
+UNATTRIBUTED_MEETING_SOURCE_LABEL = "Без меток"
 LEAD_FALLBACK_UTM_FIELDS = {
     "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
     "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
@@ -1328,7 +1329,7 @@ def build_daily_meeting_metrics(
             enforce_category=False,
         )
         if utm_key is None:
-            continue
+            utm_key = unattributed_meeting_key()
         daily_counts[entry.meeting_date][utm_key].meeting_show += 1
 
     return {current_date: dict(counter) for current_date, counter in daily_counts.items()}
@@ -1561,7 +1562,21 @@ def resolve_source_label(raw_source: str, unknown_source: str) -> str:
     return normalized_source
 
 
+def unattributed_meeting_key() -> UtmKey:
+    return UtmKey(
+        utm_source=UNATTRIBUTED_MEETING_SOURCE_LABEL,
+        utm_medium="",
+        utm_campaign="",
+    )
+
+
+def is_unattributed_meeting_key(key: UtmKey) -> bool:
+    return key == unattributed_meeting_key()
+
+
 def resolve_allowed_source_label(key: UtmKey) -> str | None:
+    if is_unattributed_meeting_key(key):
+        return UNATTRIBUTED_MEETING_SOURCE_LABEL
     return ALLOWED_UTM_RULES.get((key.utm_source, key.utm_medium, key.utm_campaign))
 
 
