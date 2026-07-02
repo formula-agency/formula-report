@@ -30,6 +30,7 @@ KC_DASHBOARD_URL = "https://formula-agency.github.io/otchety/"
 DEFAULT_MEETING_LOG_SHEET_ID = "1CNT1xTe5uBHo4W4ZLUh3qZLmgWy7wxe7nSsCtDXwwIo"
 DEFAULT_MEETING_LOG_SHEET_NAME = "Meetings"
 UNATTRIBUTED_MEETING_SOURCE_LABEL = "Без меток"
+FORCED_NO_TAG_DEAL_IDS = {"5415", "5417"}
 LEAD_FALLBACK_UTM_FIELDS = {
     "source": ["UF_LEAD_FIRST_UTM_SOURCE"],
     "medium": ["UF_LEAD_FIRST_UTM_MEDIUM"],
@@ -1196,6 +1197,9 @@ def resolve_allowed_utm_key_for_deal(
     resolved_deal_id = deal_id or str(deal.get("ID") or "").strip()
     if resolved_deal_id and resolved_deal_id not in caches.deal_cache:
         caches.deal_cache[resolved_deal_id] = deal
+
+    if resolved_deal_id in FORCED_NO_TAG_DEAL_IDS:
+        return unattributed_meeting_key()
 
     if enforce_category and not deal_in_allowed_category(deal, settings):
         return None
