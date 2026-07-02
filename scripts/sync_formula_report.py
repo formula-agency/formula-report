@@ -24,7 +24,6 @@ GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 ALLOWED_UTM_RULES = {
     ("leadit", "cpa", "frml"): "Лидген КЦ",
     ("selfwalk", "organic", "frml"): "Самоход",
-    ("avito", "cpc", "frml"): "Авито",
     ("recommendation", "call", "frml"): "Рекомендация",
 }
 KC_DASHBOARD_URL = "https://formula-agency.github.io/otchety/"
@@ -1577,6 +1576,8 @@ def is_unattributed_meeting_key(key: UtmKey) -> bool:
 def resolve_allowed_source_label(key: UtmKey) -> str | None:
     if is_unattributed_meeting_key(key):
         return UNATTRIBUTED_MEETING_SOURCE_LABEL
+    if key.utm_source == "avito":
+        return "Авито"
     return ALLOWED_UTM_RULES.get((key.utm_source, key.utm_medium, key.utm_campaign))
 
 
